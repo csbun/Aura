@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aura"
+version = "0.1.0"
+description = "Local NAS photo indexing companion for people, events, tags, and smart albums"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pillow>=10,<13",
+  "pillow-heif>=0.18,<1",
+  "pydantic>=2.7,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27,<1",
+  "pytest>=8,<9",
+]
+
+[project.scripts]
+aura-scan = "aura.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

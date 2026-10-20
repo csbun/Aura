@@ -1,0 +1,18 @@
+# Use this file when the sidecar should mount the NAS directly through Docker.
+# It avoids a host-level mount. Keep the .env file private (mode 600).
+services:
+  aura:
+    volumes:
+      - nas_photos:/photos:ro
+
+  aura-scan:
+    volumes:
+      - nas_photos:/photos:ro
+
+volumes:
+  nas_photos:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${NAS_HOST:?set NAS_HOST}/${NAS_SHARE:?set NAS_SHARE}"
+      o: "addr=${NAS_HOST:?set NAS_HOST},username=${NAS_USER:?set NAS_USER},password=${NAS_PASSWORD:?set NAS_PASSWORD},ro,vers=${NAS_SMB_VERSION:-3.0},sec=ntlmssp,iocharset=utf8"

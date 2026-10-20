@@ -1,0 +1,27 @@
+services:
+  aura:
+    build: .
+    restart: unless-stopped
+    environment:
+      PHOTO_ROOT: /photos
+      AURA_DB_PATH: /data/aura.db
+    ports:
+      - "${AURA_PORT:-8080}:8080"
+    volumes:
+      - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
+      - "${AURA_DATA_DIR:-./data}:/data"
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  aura-scan:
+    build: .
+    profiles: ["jobs"]
+    environment:
+      PHOTO_ROOT: /photos
+      AURA_DB_PATH: /data/aura.db
+    volumes:
+      - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
+      - "${AURA_DATA_DIR:-./data}:/data"
+    entrypoint: ["aura-scan"]
+
