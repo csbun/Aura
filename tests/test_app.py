@@ -33,3 +33,29 @@ def test_review_and_ui_work_without_immich(tmp_path,monkeypatch):
     # An indexed symlink/legacy path outside the root must never be served.
     module.database.execute('UPDATE assets SET path=? WHERE id=?',[str(tmp_path/'private.jpg'),asset['id']])
     assert client.get(f"/api/v1/assets/{asset['id']}/thumbnail").status_code==403
+
+
+def test_people_review_and_paged_tags(tmp_path,monkeypatch):
+    monkeypatch.setenv('PHOTO_ROOT',str(tmp_path))
+    monkeypatch.setenv('AURA_DB_PATH',str(tmp_path/'review.db'))
+    from aura import app as module
+    importlib.reload(module)
+    client=TestClient(module.app)
+    service=module.service
+    a=service.database.execute("INSERT INTO assets(path,sha256,size_bytes,mtime_ns,indexed_at) VALUES (?,'h',1,1,'now')",[str(tmp_path/'one.jpg')]).lastrowid
+    service.map_external_asset(a,'immich','remote')
+    from aura.enrichment import RecognitionSync
+    RecognitionSync(service.database).apply_asset(a,{'id':'remote','people':[{'id':'p','name':'小明'}],'tags':[{'id':'t','name':'旅行'}]},'3.3.4')
+    person=client.get('/api/v1/people').json()[0]['id']
+    assert client.patch(f'/api/v1/people/{person}',json={'name':'家人'}).status_code==200
+    assert client.get('/api/v1/assets',params={'person_id':person}).json()[0]['id']==a
+    assert len(client.get('/api/v1/person-assignments',params={'state':'confirmed'}).json())==1
+    assert client.patch(f'/api/v1/assets/{a}/people/{person}',json={'state':'rejected'}).status_code==200
+    assert client.get('/api/v1/assets',params={'person_id':person}).json()==[]
+    other=client.post('/api/v1/people',json={'name':'另一人物'}).json()['id']
+    assert client.post(f'/api/v1/assets/{a}/people/{person}/correct',json={'person_id':other}).status_code==200
+    assert len(client.get('/api/v1/assets',params={'person_id':other}).json())==1
+    assert len(client.get('/api/v1/tag-assignments',params={'state':'confirmed','limit':1}).json())==1
+    assert client.get('/api/v1/tag-assignments',params={'offset':1}).json()==[]
+    assert client.get('/api/v1/tag-assignments',params={'limit':0}).status_code==422
+    assert client.patch('/api/v1/people/99999',json={'name':'name'}).status_code==404

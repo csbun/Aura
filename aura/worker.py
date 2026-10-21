@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from .config import ImmichConfig, Settings
 from .db import Database
 from .events import build_day_candidates
+from .enrichment import RecognitionSync, generate_metadata_tags, ensure_face_jobs
 from .immich import ImmichClient, ImmichError, ImmichSettings
 from .scanner import PhotoScanner
 from .service import AuraService
@@ -30,14 +31,16 @@ def _run_task(database: Database, name: str, action) -> bool:
         LOGGER.exception("automatic task failed: %s", name)
         database.execute("UPDATE task_status SET state='failed', finished_at=?, error=? WHERE name=?", [datetime.now(timezone.utc).isoformat(), str(error), name])
         return False
-    database.execute("UPDATE task_status SET state='complete', finished_at=?, result_json=?, error=NULL WHERE name=?", [datetime.now(timezone.utc).isoformat(), json.dumps(result), name])
+    errors = result.get("errors", [])
+    database.execute("UPDATE task_status SET state=?, finished_at=?, result_json=?, error=? WHERE name=?", ["failed" if errors else "complete", datetime.now(timezone.utc).isoformat(), json.dumps(result), "; ".join(errors) if errors else None, name])
     LOGGER.info("%s=%s", name, result)
-    return True
+    return not errors
 
 
 def scan_library(settings: Settings, database: Database) -> dict:
     result = PhotoScanner(settings.photo_root, database).scan()
     result["new_event_candidates"] = build_day_candidates(database)
+    result["tag_assignments"] = generate_metadata_tags(database)
     return result
 
 
@@ -47,6 +50,8 @@ def sync_albums(settings: Settings, config: ImmichConfig, database: Database) ->
     client = ImmichClient(ImmichSettings(config.url, config.api_key))
     service = AuraService(database)
     mapping = service.sync_immich_asset_mappings(client, config.path_prefix, str(settings.photo_root.resolve()))
+    _run_task(database, "face_jobs", lambda: ensure_face_jobs(database, client))
+    _run_task(database, "recognition", lambda: RecognitionSync(database).run_batch(client))
     synced = 0
     failures = []
     for album in service.list_smart_albums():

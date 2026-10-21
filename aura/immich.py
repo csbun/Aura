@@ -93,3 +93,39 @@ class ImmichClient:
             if album.get("albumName") == name:
                 return album
         return self.create_album(name)
+
+    def asset_info(self, asset_id: str) -> dict:
+        result = self._request("GET", f"/api/assets/{quote(asset_id, safe='')}")
+        if not isinstance(result, dict) or result.get("id") != asset_id:
+            raise ImmichError("unexpected asset detail response")
+        # Omitted relationships are not an authoritative empty list.
+        for key in ("people", "tags"):
+            if key not in result or not isinstance(result[key], list):
+                raise ImmichError(f"asset detail is missing {key}; check Immich version and API permissions")
+            for item in result[key]:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("name"), str):
+                    raise ImmichError(f"invalid {key} relationship")
+        return result
+
+    def server_version(self) -> str:
+        result = self._request("GET", "/api/server/version")
+        if not isinstance(result, dict) or not all(isinstance(result.get(key), int) for key in ("major", "minor", "patch")):
+            raise ImmichError("unexpected server version response")
+        return ".".join(str(result[key]) for key in ("major", "minor", "patch"))
+
+    def face_queues(self) -> dict:
+        result = self._request("GET", "/api/jobs")
+        if not isinstance(result, dict):
+            raise ImmichError("unexpected Immich job response")
+        for name in ("faceDetection", "facialRecognition"):
+            queue = result.get(name, {})
+            if not isinstance(queue, dict) or not isinstance(queue.get("jobCounts"), dict) or not isinstance(queue.get("queueStatus"), dict):
+                raise ImmichError(f"missing Immich queue: {name}")
+            if not all(isinstance(queue['jobCounts'].get(key), int) for key in ('active','waiting','failed')) or not all(isinstance(queue['queueStatus'].get(key), bool) for key in ('isPaused','isActive')):
+                raise ImmichError(f"invalid Immich queue status: {name}")
+        return result
+
+    def start_missing_faces(self, queue: str) -> None:
+        if queue not in {"faceDetection", "facialRecognition"}:
+            raise ValueError("invalid face queue")
+        self._request("PUT", f"/api/jobs/{queue}", {"command": "start", "force": False})

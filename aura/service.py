@@ -22,7 +22,7 @@ class AuraService:
         self.database.initialize()
 
     def search_assets(self, query: str | None = None, start: str | None = None, end: str | None = None,
-                      person: str | None = None, tag: str | None = None, event: int | None = None) -> list[dict[str, Any]]:
+                      person: str | None = None, tag: str | None = None, event: int | None = None, person_id: int | None = None, tag_id: int | None = None) -> list[dict[str, Any]]:
         clauses = ["missing_at IS NULL"]
         params: list[Any] = []
         if query:
@@ -35,14 +35,16 @@ class AuraService:
             clauses.append("captured_at < ?")
             params.append(end)
         joins = ""
-        if person:
+        if person or person_id is not None:
             joins += " JOIN asset_people ap ON ap.asset_id = assets.id JOIN people p ON p.id = ap.person_id"
-            clauses.append("lower(p.name) = lower(?)")
-            params.append(person)
-        if tag:
+            clauses.append("ap.review_state='confirmed' AND ap.active=1")
+            clauses.append("p.id = ?" if person_id is not None else "lower(p.name) = lower(?)")
+            params.append(person_id if person_id is not None else person)
+        if tag or tag_id is not None:
             joins += " JOIN asset_tags at ON at.asset_id = assets.id JOIN tags t ON t.id = at.tag_id"
-            clauses.append("lower(t.name) = lower(?) AND at.review_state = 'confirmed'")
-            params.append(tag)
+            clauses.append("at.review_state='confirmed' AND at.active=1")
+            clauses.append("t.id = ?" if tag_id is not None else "lower(t.name) = lower(?)")
+            params.append(tag_id if tag_id is not None else tag)
         if event is not None:
             joins += " JOIN event_assets ea ON ea.asset_id = assets.id"
             clauses.append("ea.event_id = ?")
@@ -50,15 +52,22 @@ class AuraService:
         return self.database.fetch_all(f"SELECT DISTINCT assets.* FROM assets{joins} WHERE {' AND '.join(clauses)} ORDER BY captured_at, path", params)
 
     def list_people(self) -> list[dict[str, Any]]:
-        return self.database.fetch_all("SELECT * FROM people ORDER BY name")
+        return self.database.fetch_all("SELECT p.*, (SELECT COUNT(*) FROM asset_people ap JOIN assets a ON a.id=ap.asset_id WHERE ap.person_id=p.id AND ap.active=1 AND a.missing_at IS NULL AND ap.review_state!='rejected') AS asset_count FROM people p ORDER BY name")
 
     def list_tags(self) -> list[dict[str, Any]]:
-        return self.database.fetch_all("SELECT * FROM tags ORDER BY name")
+        return self.database.fetch_all("SELECT t.*, (SELECT COUNT(*) FROM asset_tags at JOIN assets a ON a.id=at.asset_id WHERE at.tag_id=t.id AND at.active=1 AND a.missing_at IS NULL AND at.review_state='confirmed') AS asset_count FROM tags t ORDER BY name")
 
     def list_events(self) -> list[dict[str, Any]]:
         return self.database.fetch_all("SELECT e.*, (SELECT COUNT(*) FROM event_assets ea JOIN assets a ON a.id=ea.asset_id WHERE ea.event_id=e.id AND a.missing_at IS NULL) AS asset_count FROM events e ORDER BY starts_at")
 
     def create_smart_album(self, name: str, query: dict[str, Any]) -> dict[str, Any]:
+        query = dict(query)
+        for key, table in (("person", "people"), ("tag", "tags")):
+            if query.get(key) and not query.get(key + "_id"):
+                matches = self.database.fetch_all(f"SELECT id FROM {table} WHERE lower(name)=lower(?)", [query[key]])
+                if len(matches) == 1:
+                    query[key + "_id"] = matches[0]["id"]
+                    del query[key]
         cursor = self.database.execute(
             "INSERT INTO smart_albums(name, query_json, created_at) VALUES (?, ?, ?)",
             [name, json.dumps(query, ensure_ascii=False), _now()],
@@ -79,6 +88,7 @@ class AuraService:
         assets = self.search_assets(
             query=query.get("q"), start=query.get("start"), end=query.get("end"),
             person=query.get("person"), tag=query.get("tag"), event=query.get("event"),
+            person_id=query.get("person_id"), tag_id=query.get("tag_id"),
         )
         mappings = self.database.fetch_all(
             "SELECT external_id FROM external_assets WHERE provider = 'immich' AND asset_id IN ({})".format(
@@ -164,15 +174,15 @@ class AuraService:
         self.database.execute("UPDATE events SET review_state=?, confirmed=?, name=COALESCE(?, name) WHERE id=?", [state, int(state == "confirmed"), name, event_id])
         return self.database.fetch_all("SELECT * FROM events WHERE id=?", [event_id])[0]
 
-    def list_tag_assignments(self) -> list[dict]:
-        return self.database.fetch_all("SELECT at.*, t.name, a.path FROM asset_tags at JOIN tags t ON t.id=at.tag_id JOIN assets a ON a.id=at.asset_id WHERE a.missing_at IS NULL ORDER BY at.review_state, a.id")
+    def list_tag_assignments(self, state: str | None = None, offset: int = 0, limit: int = 100) -> list[dict]:
+        return self.database.fetch_all("SELECT at.*, t.name, a.path FROM asset_tags at JOIN tags t ON t.id=at.tag_id JOIN assets a ON a.id=at.asset_id WHERE a.missing_at IS NULL AND at.active=1 AND (? IS NULL OR at.review_state=?) ORDER BY a.id,t.id LIMIT ? OFFSET ?", [state,state,limit,offset])
 
     def review_tag(self, asset_id: int, tag_id: int, state: str) -> dict:
         if state not in {"confirmed", "rejected", "pending"}:
             raise ValueError("invalid review state")
         if not self.database.fetch_all("SELECT 1 FROM asset_tags WHERE asset_id=? AND tag_id=?", [asset_id, tag_id]):
             raise LookupError("tag assignment not found")
-        self.database.execute("UPDATE asset_tags SET review_state=? WHERE asset_id=? AND tag_id=?", [state, asset_id, tag_id])
+        self.database.execute("UPDATE asset_tags SET review_state=?, reviewed=1, active=1 WHERE asset_id=? AND tag_id=?", [state, asset_id, tag_id])
         return {"asset_id": asset_id, "tag_id": tag_id, "review_state": state}
 
     def list_smart_albums(self) -> list[dict]:
@@ -187,3 +197,48 @@ class AuraService:
             task["result"] = json.loads(task.pop("result_json") or "null")
         count = self.database.fetch_all("SELECT COUNT(*) AS count FROM assets WHERE missing_at IS NULL")[0]["count"]
         return {"assets": count, "tasks": tasks}
+
+    def rename_person(self, person_id: int, name: str) -> dict:
+        name = name.strip()
+        if not name:
+            raise ValueError("person name must not be empty")
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            person = connection.execute("SELECT name FROM people WHERE id=?", [person_id]).fetchone()
+            if not person:
+                raise LookupError("person not found")
+            # Upgrade legacy name rules before changing the label.
+            if connection.execute("SELECT COUNT(*) FROM people WHERE name=?", [person['name']]).fetchone()[0] == 1:
+                for album in connection.execute("SELECT id,query_json FROM smart_albums").fetchall():
+                    query = json.loads(album['query_json'])
+                    if query.get('person') == person['name'] and not query.get('person_id'):
+                        query['person_id'] = person_id
+                        del query['person']
+                        connection.execute("UPDATE smart_albums SET query_json=? WHERE id=?", [json.dumps(query,ensure_ascii=False),album['id']])
+            connection.execute("UPDATE people SET name=?,confirmed=1,name_locked=1 WHERE id=?", [name,person_id])
+            connection.execute("UPDATE asset_people SET review_state='confirmed' WHERE person_id=? AND reviewed=0 AND review_state='pending'", [person_id])
+        return self.database.fetch_all("SELECT * FROM people WHERE id=?", [person_id])[0]
+
+    def list_person_assignments(self, state: str | None = None, offset: int = 0, limit: int = 100, person_id: int | None = None) -> list[dict]:
+        return self.database.fetch_all("SELECT ap.*,p.name,a.path FROM asset_people ap JOIN people p ON p.id=ap.person_id JOIN assets a ON a.id=ap.asset_id WHERE a.missing_at IS NULL AND ap.active=1 AND (? IS NULL OR ap.review_state=?) AND (? IS NULL OR ap.person_id=?) ORDER BY a.id,p.id LIMIT ? OFFSET ?", [state,state,person_id,person_id,limit,offset])
+
+    def review_person(self, asset_id: int, person_id: int, state: str) -> dict:
+        if state not in {'pending','confirmed','rejected'}:
+            raise ValueError('invalid review state')
+        if not self.database.fetch_all('SELECT 1 FROM asset_people WHERE asset_id=? AND person_id=?', [asset_id,person_id]):
+            raise LookupError('person assignment not found')
+        self.database.execute('UPDATE asset_people SET review_state=?,reviewed=1,active=1 WHERE asset_id=? AND person_id=?', [state,asset_id,person_id])
+        return {'asset_id':asset_id,'person_id':person_id,'review_state':state}
+
+    def correct_person(self, asset_id: int, person_id: int, replacement_id: int) -> dict:
+        if person_id == replacement_id:
+            raise ValueError('select a different person')
+        with self.database.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            if not connection.execute('SELECT 1 FROM asset_people WHERE asset_id=? AND person_id=?',[asset_id,person_id]).fetchone():
+                raise LookupError('person assignment not found')
+            if not connection.execute('SELECT 1 FROM people WHERE id=?',[replacement_id]).fetchone():
+                raise LookupError('replacement person not found')
+            connection.execute("UPDATE asset_people SET review_state='rejected',reviewed=1,active=1 WHERE asset_id=? AND person_id=?",[asset_id,person_id])
+            connection.execute("INSERT INTO asset_people(asset_id,person_id,source,review_state,reviewed) VALUES (?,?,'manual','confirmed',1) ON CONFLICT(asset_id,person_id) DO UPDATE SET review_state='confirmed',reviewed=1,active=1",[asset_id,replacement_id])
+        return {'asset_id':asset_id,'person_id':replacement_id,'review_state':'confirmed'}

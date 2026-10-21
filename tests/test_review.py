@@ -66,7 +66,7 @@ def test_v2_upgrade_preserves_decisions(tmp_path):
     db.initialize()
     assert db.fetch_all('SELECT review_state FROM events')[0]['review_state'] == 'confirmed'
     assert db.fetch_all('SELECT review_state FROM asset_tags')[0]['review_state'] == 'confirmed'
-    assert db.fetch_all('SELECT version FROM schema_version') == [{'version':3}]
+    assert db.fetch_all('SELECT version FROM schema_version') == [{'version':4}]
 
 
 def test_tag_review_controls_search(service):

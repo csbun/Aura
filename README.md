@@ -1,4 +1,4 @@
-# Aura 0.2
+# Aura 0.3
 
 Aura 在 sidecar 上索引 NAS 照片，Immich 提供浏览和相册。原图通过 SMB 只读挂载，服务不会移动、删除或改写原图。
 
@@ -62,8 +62,8 @@ docker compose -f docker-compose.yml -f docker-compose.smb.yml \
 启动后 `aura-worker` 会自动：
 
 - 立即扫描照片；
-- 生成事件候选；
-- 配置 Immich API key 后，自动映射资产和同步智能相册；
+- 生成事件候选和年份、画幅、定位状态标签；
+- 配置 Immich API key 后，自动映射照片、补交缺失人脸任务、导入人物/标签、同步智能相册；
 - 扫描按 `AURA_SCAN_INTERVAL` 重复执行（默认 24 小时）；相册约每分钟同步，失败自动重试。
 
 无需手工运行扫描、事件或同步命令。查看进度：
@@ -92,6 +92,8 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
    IMMICH_API_KEY='API key'
    ```
 
+   API key 需允许照片读取/搜索、相册创建/追加和任务读取/创建。原有完整权限 key 无需修改；人脸识别保持 Immich 默认启用。
+
 更新 Aura 和 worker，使其读取 API key：
 
 ```bash
@@ -111,7 +113,11 @@ curl http://127.0.0.1:18080/api/v1/integrations/immich
 
 打开 `http://<sidecar-IP>:18080`：查看任务状态 → 预览事件照片 → 命名并确认 → 选择人物、事件、标签和时间创建相册。多个条件同时满足才会入选。
 
-审核决定会保留；智能相册自动同步到 Immich。当前仅追加照片，人物识别和自动标签接入见路线图 0.3。
+人物和标签会分批自动导入（每批最多 100 张，单并发，断点续跑；正常每 6 小时刷新）。首次人脸任务完成后会提前刷新一次。
+
+人物可命名、确认/拒绝或纠正到另一人物；标签可确认/拒绝。Immich 已命名人物、已有标签和基础规则标签可直接用于筛选，人工决定不会被重同步覆盖。新增相册规则使用稳定 ID，更名不失效。
+
+当前仅追加相册照片；基础标签不包含视觉场景识别。Immich 未提供的模型版本、置信度保留为空；人脸任务失败可在 Aura 任务卡片查看原因。
 
 也可通过 API 创建（`event` 替换为实际事件 ID）：
 
@@ -157,6 +163,10 @@ GET  /api/v1/tag-assignments
 PATCH /api/v1/assets/{asset_id}/tags/{tag_id}
 GET  /api/v1/assets
 GET  /api/v1/search/parse
+GET  /api/v1/person-assignments
+PATCH /api/v1/people/{id}
+PATCH /api/v1/assets/{asset_id}/people/{person_id}
+POST /api/v1/assets/{asset_id}/people/{person_id}/correct
 GET  /api/v1/people
 GET  /api/v1/events
 GET  /api/v1/tags

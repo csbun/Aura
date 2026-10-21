@@ -9,7 +9,12 @@ const states = {
   failed: "失败，自动重试",
   interrupted: "上次运行中断",
 };
-let lastScan = null;
+let lastScan = null,
+  lastRecognition = null;
+let catalogPeople = [],
+  peopleLimit = 30,
+  personOffset = 0,
+  tagOffset = 0;
 let allEvents = [],
   eventLimit = 30,
   previewAssets = [],
@@ -72,16 +77,41 @@ async function loadTasks() {
   $("status").textContent = `已索引 ${status.assets} 张照片`;
   $("tasks").replaceChildren();
   for (const task of status.tasks) {
+    const displayState =
+      task.name === "face_jobs" &&
+      task.state === "complete" &&
+      task.result?.phase !== "done"
+        ? "running"
+        : task.state;
     const card = node("div", undefined, "card");
     card.append(
       node(
         "strong",
-        `${task.name === "scan" ? "照片扫描" : "相册同步"} · ${states[task.state] || task.state}`,
+        `${{ scan: "照片扫描", sync: "相册同步", recognition: "人物与标签同步", face_jobs: "Immich 人脸任务" }[task.name] || task.name} · ${states[displayState] || displayState}`,
       ),
       node("p", `开始：${time(task.started_at)}`),
       node("p", `完成：${time(task.finished_at)}`),
     );
     if (task.error) card.append(node("p", task.error));
+    if (task.name === "face_jobs" && task.result)
+      card.append(
+        node(
+          "p",
+          {
+            waiting_for_library: "等待照片映射",
+            detection: "正在检测人脸",
+            recognition: "正在聚合人物",
+            done: "人脸任务已完成",
+          }[task.result.phase] || task.result.phase,
+        ),
+      );
+    if (task.name === "recognition" && task.result)
+      card.append(
+        node(
+          "p",
+          `已导入 ${task.result.completed} / ${task.result.total} 张，失败 ${task.result.failed} 张`,
+        ),
+      );
     if (task.result?.configured === false)
       card.append(node("p", "等待填写 Immich API key"));
     if (task.result?.mapping) {
@@ -97,6 +127,15 @@ async function loadTasks() {
   if (scan?.state === "complete" && scan.finished_at !== lastScan) {
     lastScan = scan.finished_at;
     await loadEvents();
+  }
+  const recognition = status.tasks.find((t) => t.name === "recognition");
+  const catalogVersion = `${scan?.finished_at || ""}/${recognition?.finished_at || ""}`;
+  if (
+    catalogVersion !== lastRecognition &&
+    !$("catalog").contains(document.activeElement)
+  ) {
+    lastRecognition = catalogVersion;
+    await loadCatalog();
   }
 }
 function renderEvents() {
@@ -173,27 +212,123 @@ function renderPhotos() {
   $("more-photos").hidden = previewAssets.length <= photoLimit;
 }
 async function loadCatalog() {
-  const [people, tags, assignments] = await Promise.all([
-    api("/people"),
-    api("/tags"),
-    api("/tag-assignments"),
-  ]);
-  $("people").textContent =
-    "人物：" + (people.map((p) => p.name).join("、") || "暂无");
-  $("tags").textContent =
-    "标签：" + (tags.map((t) => t.name).join("、") || "暂无");
-  options("person-filter", people, "name");
-  options("tag-filter", tags, "name");
+  const [people, tags] = await Promise.all([api("/people"), api("/tags")]);
+  catalogPeople = people;
+  renderPeople();
+  $("tags").textContent = `${tags.length} 个标签，选择已确认标签可创建相册。`;
+  options(
+    "person-filter",
+    people.filter((p) => p.confirmed),
+    "id",
+  );
+  options("review-person-filter", people, "id");
+  options(
+    "tag-filter",
+    tags.filter((t) => t.asset_count > 0),
+    "id",
+  );
+  await Promise.all([loadPersonAssignments(), loadTagAssignments()]);
+}
+function renderPeople() {
+  $("people").replaceChildren();
+  for (const p of catalogPeople.slice(0, peopleLimit)) {
+    const card = node("div", undefined, "card"),
+      name = node("input");
+    name.value = p.name;
+    name.maxLength = 200;
+    name.setAttribute("aria-label", "人物名称");
+    card.append(
+      name,
+      node("p", `${p.asset_count} 张照片`),
+      button("保存名字", async () => {
+        await api(`/people/${p.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: name.value }),
+        });
+        await loadCatalog();
+        notify("人物名称已保存。");
+      }),
+      button("查看照片", async () => {
+        $("review-person-filter").value = p.id;
+        $("person-review-state").value = p.confirmed ? "confirmed" : "pending";
+        personOffset = 0;
+        await loadPersonAssignments();
+      }),
+    );
+    $("people").append(card);
+  }
+  if (!catalogPeople.length)
+    $("people").textContent = "等待 Immich 人脸识别和自动导入";
+  $("more-people").hidden = catalogPeople.length <= peopleLimit;
+}
+function assignmentCard(a) {
+  const card = node("div", undefined, "card"),
+    image = node("img");
+  image.src = `/api/v1/assets/${a.asset_id}/thumbnail`;
+  image.loading = "lazy";
+  image.width = 160;
+  image.alt = a.path.split("/").pop();
+  card.append(image, node("p", `${a.name} · ${image.alt}`));
+  card.append(
+    node(
+      "p",
+      `来源：${a.source === "aura.metadata" ? "基础标签规则" : a.source === "manual" ? "人工" : "Immich"} · ${a.reviewed ? "人工决定" : "自动导入"}`,
+    ),
+  );
+  return card;
+}
+async function loadPersonAssignments() {
+  const person = $("review-person-filter").value;
+  const rows = await api(
+    `/person-assignments?state=${$("person-review-state").value}&limit=30&offset=${personOffset}${person ? "&person_id=" + person : ""}`,
+  );
+  $("person-assignments").replaceChildren();
+  for (const a of rows) {
+    const card = assignmentCard(a);
+    for (const state of ["confirmed", "rejected"])
+      card.append(
+        button(states[state], async () => {
+          await api(`/assets/${a.asset_id}/people/${a.person_id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ state }),
+          });
+          await loadCatalog();
+        }),
+      );
+    const select = node("select");
+    select.setAttribute("aria-label", "正确的人物");
+    const placeholder = node("option", "选择正确人物");
+    placeholder.value = "";
+    select.append(placeholder);
+    for (const p of catalogPeople.filter((p) => p.id !== a.person_id)) {
+      const option = node("option", p.name);
+      option.value = p.id;
+      select.append(option);
+    }
+    card.append(
+      select,
+      button("纠正人物", async () => {
+        if (!select.value) throw new Error("请选择正确人物");
+        await api(`/assets/${a.asset_id}/people/${a.person_id}/correct`, {
+          method: "POST",
+          body: JSON.stringify({ person_id: Number(select.value) }),
+        });
+        await loadCatalog();
+      }),
+    );
+    $("person-assignments").append(card);
+  }
+  if (!rows.length) $("person-assignments").textContent = "暂无记录";
+  $("previous-people").disabled = personOffset === 0;
+  $("next-people").disabled = rows.length < 30;
+}
+async function loadTagAssignments() {
+  const rows = await api(
+    `/tag-assignments?state=${$("tag-review-state").value}&limit=30&offset=${tagOffset}`,
+  );
   $("assignments").replaceChildren();
-  const pending = assignments.filter((a) => a.review_state === "pending");
-  for (const a of pending.slice(0, 30)) {
-    const card = node("div", undefined, "card");
-    const image = node("img");
-    image.src = `/api/v1/assets/${a.asset_id}/thumbnail`;
-    image.loading = "lazy";
-    image.width = 160;
-    image.alt = a.path.split("/").pop();
-    card.append(image, node("p", `${a.name} · ${image.alt}`));
+  for (const a of rows) {
+    const card = assignmentCard(a);
     for (const state of ["confirmed", "rejected"])
       card.append(
         button(states[state], async () => {
@@ -206,8 +341,45 @@ async function loadCatalog() {
       );
     $("assignments").append(card);
   }
-  if (!pending.length) $("assignments").textContent = "暂无待审核标签";
+  if (!rows.length) $("assignments").textContent = "暂无记录";
+  $("previous-tags").disabled = tagOffset === 0;
+  $("next-tags").disabled = rows.length < 30;
 }
+function catalogAction(id, action) {
+  $(id).onclick = () =>
+    Promise.resolve()
+      .then(action)
+      .catch((e) => notify(e.message));
+}
+catalogAction("more-people", () => {
+  peopleLimit += 30;
+  renderPeople();
+});
+catalogAction("previous-people", () => {
+  personOffset = Math.max(0, personOffset - 30);
+  return loadPersonAssignments();
+});
+catalogAction("next-people", () => {
+  personOffset += 30;
+  return loadPersonAssignments();
+});
+catalogAction("previous-tags", () => {
+  tagOffset = Math.max(0, tagOffset - 30);
+  return loadTagAssignments();
+});
+catalogAction("next-tags", () => {
+  tagOffset += 30;
+  return loadTagAssignments();
+});
+for (const id of ["person-review-state", "review-person-filter"])
+  $(id).onchange = () => {
+    personOffset = 0;
+    loadPersonAssignments().catch((e) => notify(e.message));
+  };
+$("tag-review-state").onchange = () => {
+  tagOffset = 0;
+  loadTagAssignments().catch((e) => notify(e.message));
+};
 async function loadAlbums() {
   const albums = await api("/smart-albums");
   $("albums").replaceChildren();
@@ -244,7 +416,8 @@ $("album-form").onsubmit = async (event) => {
     const query = Object.fromEntries(
       Object.entries(values).filter(([, v]) => v !== ""),
     );
-    if (query.event) query.event = Number(query.event);
+    for (const key of ["event", "person_id", "tag_id"])
+      if (query[key]) query[key] = Number(query[key]);
     await api("/smart-albums", {
       method: "POST",
       body: JSON.stringify({ name, query }),

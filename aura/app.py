@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
@@ -36,6 +36,8 @@ class AlbumQuery(BaseModel):
     q: str | None = None
     person: str | None = None
     tag: str | None = None
+    person_id: int | None = Field(default=None, gt=0)
+    tag_id: int | None = Field(default=None, gt=0)
     event: int | None = Field(default=None, gt=0)
     start: str | None = None
     end: str | None = None
@@ -77,8 +79,8 @@ def scan(request: ScanRequest = ScanRequest()) -> dict[str, int]:
 
 @app.get("/api/v1/assets")
 def assets(q: str | None = None, start: str | None = None, end: str | None = None,
-           person: str | None = None, tag: str | None = None, event: int | None = None) -> list[dict]:
-    return service.search_assets(q, start, end, person, tag, event)
+           person: str | None = None, tag: str | None = None, event: int | None = None, person_id: int | None = None, tag_id: int | None = None) -> list[dict]:
+    return service.search_assets(q, start, end, person, tag, event, person_id, tag_id)
 
 
 @app.get("/api/v1/people")
@@ -188,8 +190,8 @@ def review_event(event_id: int, request: ReviewRequest) -> dict:
 
 
 @app.get("/api/v1/tag-assignments")
-def tag_assignments() -> list[dict]:
-    return service.list_tag_assignments()
+def tag_assignments(state: Literal["pending", "confirmed", "rejected"] | None = None, offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)) -> list[dict]:
+    return service.list_tag_assignments(state, offset, limit)
 
 
 @app.patch("/api/v1/assets/{asset_id}/tags/{tag_id}")
@@ -224,3 +226,27 @@ app.mount("/static", StaticFiles(directory=static_root), name="static")
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse(static_root / "index.html")
+
+
+class PersonCorrectionRequest(BaseModel):
+    person_id: int = Field(gt=0)
+
+
+@app.patch("/api/v1/people/{person_id}")
+def rename_person(person_id: int, request: NamedRequest) -> dict:
+    return service.rename_person(person_id, request.name)
+
+
+@app.get("/api/v1/person-assignments")
+def person_assignments(state: Literal["pending", "confirmed", "rejected"] | None = None, offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200), person_id: int | None = None) -> list[dict]:
+    return service.list_person_assignments(state, offset, limit, person_id)
+
+
+@app.patch("/api/v1/assets/{asset_id}/people/{person_id}")
+def review_person(asset_id: int, person_id: int, request: ReviewRequest) -> dict:
+    return service.review_person(asset_id, person_id, request.state)
+
+
+@app.post("/api/v1/assets/{asset_id}/people/{person_id}/correct")
+def correct_person(asset_id: int, person_id: int, request: PersonCorrectionRequest) -> dict:
+    return service.correct_person(asset_id, person_id, request.person_id)

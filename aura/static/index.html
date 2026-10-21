@@ -39,13 +39,44 @@
         <div id="photos" class="photos"></div>
         <button id="more-photos" hidden>查看更多照片</button>
       </section>
-      <section>
+      <section id="catalog">
         <h2>人物与标签</h2>
-        <p class="hint">显示当前已有记录；自动识别接入安排在 0.3。</p>
-        <p id="people"></p>
-        <p id="tags"></p>
+        <p class="hint">
+          自动导入 Immich
+          人物和标签。可在这里命名人物、纠正识别；已保存的决定不会被同步覆盖。
+        </p>
+        <div id="people" class="cards"></div>
+        <button id="more-people" hidden>更多人物</button>
+        <h3>人物照片审核</h3>
+        <div class="actions">
+          <select id="person-review-state" aria-label="人物审核状态">
+            <option value="pending">待审核</option>
+            <option value="confirmed">已确认</option>
+            <option value="rejected">已拒绝</option></select
+          ><select id="review-person-filter" aria-label="筛选人物">
+            <option value="">不限</option>
+          </select>
+        </div>
+        <div id="person-assignments" class="cards"></div>
+        <div class="actions">
+          <button id="previous-people">上一页</button
+          ><button id="next-people">下一页</button>
+        </div>
         <h3>照片标签审核</h3>
+        <p class="hint">
+          系统自动生成年份、画幅和定位状态标签，可直接用于相册；有误时可拒绝。
+        </p>
+        <p id="tags"></p>
+        <select id="tag-review-state" aria-label="标签审核状态">
+          <option value="pending">待审核</option>
+          <option value="confirmed">已确认</option>
+          <option value="rejected">已拒绝</option>
+        </select>
         <div id="assignments" class="cards"></div>
+        <div class="actions">
+          <button id="previous-tags">上一页</button
+          ><button id="next-tags">下一页</button>
+        </div>
       </section>
       <section>
         <h2>创建智能相册</h2>
@@ -55,7 +86,7 @@
         <form id="album-form">
           <label>相册名称<input name="name" required maxlength="200" /></label
           ><label
-            >人物<select name="person" id="person-filter">
+            >人物<select name="person_id" id="person-filter">
               <option value="">不限</option>
             </select></label
           ><label
@@ -63,7 +94,7 @@
               <option value="">不限</option>
             </select></label
           ><label
-            >标签<select name="tag" id="tag-filter">
+            >标签<select name="tag_id" id="tag-filter">
               <option value="">不限</option>
             </select></label
           ><label>开始日期<input name="start" type="date" /></label
