@@ -1,69 +1,52 @@
-# Aura roadmap
+# Aura 路线图
 
-This roadmap turns the current `0.1` scanner into a maintainable local photo
-organizer. The source of truth remains the read-only NAS library; Aura owns
-derived metadata and review decisions. Immich remains a replaceable display
-adapter rather than a database that Aura edits directly.
+原图留在 NAS，只读 SMB；应用、数据库和计算运行在 sidecar。优先复用 Immich，避免重复实现识别能力。
 
-## 0.1 — complete
+## 0.1 — 已完成
 
-- SMB/CIFS Docker volume and read-only library access
-- idempotent image indexing with SHA-256 and EXIF/GPS metadata
-- SQLite schema for assets, people, tags, events, and smart albums
-- deterministic day-level event candidates
-- small HTTP interface and Chinese query-plan endpoint
-- nightly scan command and progress logging
+- Docker 部署、SMB 只读挂载、可配置端口。
+- 照片增量索引、SHA-256、EXIF/GPS、按日期和时间间隔生成事件候选。
+- 人物、标签、事件、智能相册数据模型及基础 API。
+- Immich 资产映射、相册创建和追加同步；已验证 6410 张本地照片全部匹配。
+- worker 启动即执行扫描、事件生成和相册同步，默认每 24 小时重复；无需手工运行任务。
+- 简明安装文档：配置 SMB、启动服务、创建 Immich 外部库和填写 API key。
 
-## 0.2 — integration and review loop
+当前限制：相册只追加照片；任务状态主要看日志；事件候选重新生成时 ID 不稳定；自然语言接口只有基础规则解析。
 
-1. Add external-identity mappings so a local asset can map to an Immich asset
-   without storing Immich UUIDs in the core asset table.
-2. Add an Immich adapter with health checks, album discovery, album creation,
-   and idempotent asset membership updates. Keep it opt-in and API-key based.
-3. Add a review API for confirming or rejecting event candidates and generated
-   tags. Confirmed records must survive regeneration.
-4. Add a small companion Web UI for scan status, events, people, tags, and
-   smart-album rules.
+## 0.2 — 下一阶段：审核与管理页面
 
-Acceptance: an operator can connect an existing Immich instance, materialize
-one confirmed event as an album, run the operation twice without duplicates,
-and continue browsing photos if Immich is unavailable.
+- [ ] 保持事件 ID 稳定，确认和拒绝决定在自动扫描后保留。
+- [ ] 事件命名、确认/拒绝及照片标签审核 API。
+- [ ] 管理页面：任务状态、事件照片预览、人物/标签、组合规则创建相册。
+- [ ] 使用已保存的 Immich 相册 ID，重复同步不创建重复相册，不接管同名相册。
+- [ ] 持久化任务结果和错误；Immich 不可用时仍可查询本地资料。
+- [ ] 自动化测试覆盖重复运行、审核保留、同步失败和数据库升级。
 
-## 0.3 — people and tags
+验收：从页面确认一个事件并创建相册，后台自动同步；重复执行无重复相册，重扫不丢审核结果，Immich 离线仍可查看本地内容。
 
-1. Run a CPU-friendly face detector/embedding worker on the sidecar.
-2. Store model name, model version, confidence, and review state for every
-   face assignment.
-3. Add a controlled system-tag vocabulary plus user tags.
-4. Make model jobs resumable and bounded by a one-worker CPU budget.
+## 0.3 — 人物与标签
 
-Acceptance: unknown faces can be merged, split, named, and reprocessed without
-changing original files.
+- 优先接入 Immich 人脸识别、人物命名和已有标签；缺失能力再使用独立模型适配器。
+- 记录识别来源、模型版本、置信度和审核状态，支持人工纠正。
+- 离线任务可恢复、限制并发；自动任务无需额外人工配置。
 
-## 0.4 — events and search
+验收：按已命名人物和已确认标签筛选照片，重新处理不覆盖人工决定。
 
-1. Add GPS clustering and place normalization to the deterministic time
-   grouping.
-2. Add scene/OCR embeddings behind a replaceable model adapter.
-3. Expand the Chinese parser into a reviewable structured query plan.
-4. Support people + event + tag + time + place smart-album rules.
+## 0.4 — 事件与搜索
 
-Acceptance: a query can be previewed as structured filters, corrected by the
-user, and materialized as a dynamic Immich album.
+- 时间段、GPS 和地点归一化，支持旅行、会议等事件。
+- 复用语义搜索能力，按需增加 OCR；中文查询可预览和修改结构化条件。
+- 人物 + 事件 + 标签 + 时间 + 地点组合规则；相册成员随规则变化增减。
 
-## 0.5 — hardening
+验收：自然语言查询可修正后保存为动态相册，自动同步结果与规则一致。
 
-- resource limits and queue visibility
-- database backup/restore checks
-- SMB reconnect and stale-file handling
-- pinned Immich compatibility matrix
-- metrics for indexing throughput, failures, and model backlog
-- optional duplicate detection; never automatic deletion
+## 0.5 — 稳定性
 
-## Decisions that stay fixed
+- SMB 断连、缺失文件、超大/损坏图片处理及失败重试。
+- 资源限制、任务进度、积压监控、数据库恢复验证。
+- 固定已验证的 Immich 版本及兼容测试。
+- 可选重复照片检测；不自动删除原图，不要求第二份原图备份。
 
-- originals remain on NAS and are never rewritten by Aura
-- network access is LAN-only by default
-- Postgres/SQLite and derived indexes live on the sidecar's local disk
-- model processing is offline after model installation
-- external integrations use adapters and stable Aura interfaces
+## 固定约束
+
+原图不改写；默认仅局域网使用；数据库和索引放 sidecar 本地盘；模型安装后离线运行；第三方集成通过适配器访问公开 API。

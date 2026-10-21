@@ -17,6 +17,24 @@ services:
     tmpfs:
       - /tmp
 
+  aura-worker:
+    build: .
+    restart: unless-stopped
+    environment:
+      PHOTO_ROOT: /photos
+      AURA_DB_PATH: /data/aura.db
+      AURA_SCAN_INTERVAL: ${AURA_SCAN_INTERVAL:-86400}
+      IMMICH_URL: ${IMMICH_URL:-}
+      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
+      IMMICH_PATH_PREFIX: ${IMMICH_PATH_PREFIX:-/photos}
+    volumes:
+      - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
+      - "${AURA_DATA_DIR:-./data}:/data"
+    read_only: true
+    tmpfs:
+      - /tmp
+    command: ["aura-worker"]
+
   aura-scan:
     build: .
     profiles: ["jobs"]

@@ -62,6 +62,8 @@ class ImmichClient:
         )
         if isinstance(result, dict):
             assets = result.get("assets") or result.get("items") or []
+            if isinstance(assets, dict):
+                assets = assets.get("items") or assets.get("assets") or assets.get("data") or []
             return assets if isinstance(assets, list) else []
         return result if isinstance(result, list) else []
 

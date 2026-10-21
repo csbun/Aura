@@ -9,6 +9,10 @@ services:
     volumes:
       - nas_photos:/photos:ro
 
+  aura-worker:
+    volumes:
+      - nas_photos:/photos:ro
+
 volumes:
   nas_photos:
     driver: local

@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 aura-scan = "aura.cli:main"
+aura-worker = "aura.worker:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

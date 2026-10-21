@@ -1,7 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
-# Run from the directory containing docker-compose.yml. Put this in the
-# sidecar host's root crontab, after mounting the NAS SMB share:
-#   0 2 * * * /opt/aura/scripts/nightly-scan.sh >>/var/log/aura-scan.log 2>&1
-exec docker compose --profile jobs run --rm aura-scan
+# Run from the repository directory. Default mode starts Aura with Immich's
+# shared SMB volume; set AURA_COMPOSE_MODE=smb for Aura-only deployments.
+case "${AURA_COMPOSE_MODE:-immich}" in
+  immich) set -- -f docker-compose.yml -f docker-compose.immich.yml ;;
+  smb) set -- -f docker-compose.yml -f docker-compose.smb.yml ;;
+  *) echo "AURA_COMPOSE_MODE must be immich or smb" >&2; exit 2 ;;
+esac
+exec docker compose "$@" --profile jobs run --rm aura-scan

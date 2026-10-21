@@ -12,6 +12,10 @@ services:
     volumes:
       - nas_photos:/photos:ro
 
+  aura-worker:
+    volumes:
+      - nas_photos:/photos:ro
+
   immich-server:
     profiles: ["immich"]
     container_name: immich_server
