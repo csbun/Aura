@@ -185,3 +185,27 @@ def test_worker_sync_does_not_wait_for_daily_scan(tmp_path,monkeypatch):
     with pytest.raises(SystemExit):
         worker.main()
     assert calls==['scan','sync','sync']
+
+
+def test_album_preview_explains_empty_intersection_and_edit_keeps_remote_id(service):
+    db = service.database
+    first = add_asset(db, '/photos/person.jpg')
+    second = add_asset(db, '/photos/event.jpg')
+    person = service.create_person('Person', True)['id']
+    event = service.create_event('Event', confirmed=True)['id']
+    db.execute("INSERT INTO asset_people(asset_id,person_id,review_state) VALUES (?,?,'confirmed')", [first, person])
+    db.execute('INSERT INTO event_assets(event_id,asset_id) VALUES (?,?)', [event, second])
+    service.map_external_asset(first, 'immich', 'remote-first')
+    album = service.create_smart_album('album', {'person_id':person, 'event':event})
+    remote = FakeImmich()
+    service.materialize_smart_album(album['id'], remote)
+    preview = service.preview_album({'person_id':person, 'event':event})
+    assert preview['matched_assets'] == 0
+    assert preview['condition_counts'] == {'person_id':1, 'event':1}
+    assert service.list_smart_albums()[0]['matched_assets'] == 0
+    service.update_smart_album_query(album['id'], {'person_id':person})
+    result = service.materialize_smart_album(album['id'], remote)
+    assert result['synced_assets'] == 1
+    assert len(remote.created) == 1
+    assert remote.members == {'1':{'remote-first'}}
+    assert service.preview_album({'person_id':person})['mapped_assets'] == 1

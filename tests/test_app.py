@@ -59,3 +59,27 @@ def test_people_review_and_paged_tags(tmp_path,monkeypatch):
     assert client.get('/api/v1/tag-assignments',params={'offset':1}).json()==[]
     assert client.get('/api/v1/tag-assignments',params={'limit':0}).status_code==422
     assert client.patch('/api/v1/people/99999',json={'name':'name'}).status_code==404
+
+
+def test_album_preview_and_rule_edit(tmp_path,monkeypatch):
+    monkeypatch.setenv('AURA_DB_PATH',str(tmp_path/'albums.db'))
+    from aura import app as module
+    importlib.reload(module)
+    client=TestClient(module.app)
+    service=module.service
+    a=service.database.execute("INSERT INTO assets(path,sha256,size_bytes,mtime_ns,indexed_at) VALUES ('/photos/a.jpg','h',1,1,'now')").lastrowid
+    b=service.database.execute("INSERT INTO assets(path,sha256,size_bytes,mtime_ns,indexed_at) VALUES ('/photos/b.jpg','h',1,1,'now')").lastrowid
+    p=service.create_person('person',True)['id'];e=service.create_event('event',confirmed=True)['id']
+    service.database.execute("INSERT INTO asset_people(asset_id,person_id,review_state) VALUES (?,?,'confirmed')",[a,p])
+    service.database.execute('INSERT INTO event_assets(event_id,asset_id) VALUES (?,?)',[e,b])
+    query={'person_id':p,'event':e}
+    preview=client.post('/api/v1/smart-albums/preview',json={'query':query})
+    assert preview.status_code==200
+    assert preview.json()['matched_assets']==0
+    assert preview.json()['condition_counts']=={'person_id':1,'event':1}
+    album=client.post('/api/v1/smart-albums',json={'name':'album','query':query}).json()['id']
+    assert client.get('/api/v1/smart-albums').json()[0]['matched_assets']==0
+    assert client.patch(f'/api/v1/smart-albums/{album}',json={'query':{'person_id':p}}).status_code==200
+    assert client.get('/api/v1/smart-albums').json()[0]['matched_assets']==1
+    assert client.patch('/api/v1/smart-albums/9999',json={'query':{}}).status_code==404
+    assert client.post('/api/v1/smart-albums/preview',json={'query':{'persno':p}}).status_code==422

@@ -250,3 +250,17 @@ def review_person(asset_id: int, person_id: int, request: ReviewRequest) -> dict
 @app.post("/api/v1/assets/{asset_id}/people/{person_id}/correct")
 def correct_person(asset_id: int, person_id: int, request: PersonCorrectionRequest) -> dict:
     return service.correct_person(asset_id, person_id, request.person_id)
+
+
+class SmartAlbumQueryRequest(BaseModel):
+    query: AlbumQuery
+
+
+@app.post("/api/v1/smart-albums/preview")
+def preview_smart_album(request: SmartAlbumQueryRequest) -> dict:
+    return service.preview_album(request.query.model_dump(exclude_none=True))
+
+
+@app.patch("/api/v1/smart-albums/{album_id}")
+def update_smart_album_query(album_id: int, request: SmartAlbumQueryRequest) -> dict:
+    return service.update_smart_album_query(album_id, request.query.model_dump(exclude_none=True))

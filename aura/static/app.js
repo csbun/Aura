@@ -10,6 +10,10 @@ const states = {
   interrupted: "上次运行中断",
   no_people: "未发现人物",
 };
+let editingAlbum = null,
+  previewSerial = 0,
+  previewTimer;
+let catalogTags = [];
 let lastScan = null,
   lastRecognition = null;
 let catalogPeople = [],
@@ -221,6 +225,7 @@ function renderPhotos() {
 async function loadCatalog() {
   const [people, tags] = await Promise.all([api("/people"), api("/tags")]);
   catalogPeople = people;
+  catalogTags = tags;
   renderPeople();
   $("tags").textContent = `${tags.length} 个标签，选择已确认标签可创建相册。`;
   options(
@@ -394,8 +399,15 @@ async function loadAlbums() {
     const card = node("div", undefined, "card");
     card.append(
       node("strong", a.name),
-      node("p", `最近完整同步：${time(a.materialized_at)}`),
-      node("p", JSON.stringify(a.query)),
+      node(
+        "p",
+        a.matched_assets
+          ? `当前匹配 ${a.matched_assets} 张照片`
+          : "当前匹配 0 张：请调整筛选条件",
+      ),
+      node("p", `最近检查：${time(a.materialized_at)}`),
+      node("p", describeAlbumQuery(a.query)),
+      button("编辑条件", () => editAlbum(a)),
     );
     $("albums").append(card);
   }
@@ -412,31 +424,170 @@ $("more-photos").onclick = () => {
   photoLimit += 60;
   renderPhotos();
 };
+function readAlbumQuery() {
+  const values = Object.fromEntries(new FormData($("album-form")));
+  delete values.name;
+  const query = Object.fromEntries(
+    Object.entries(values).filter(([, v]) => v !== ""),
+  );
+  for (const key of ["event", "person_id", "tag_id"])
+    if (query[key]) query[key] = Number(query[key]);
+  return query;
+}
+const filterLabels = {
+  person: "人物",
+  person_id: "人物",
+  event: "事件",
+  tag: "标签",
+  tag_id: "标签",
+  start: "开始日期",
+  end: "结束日期",
+  q: "文件路径",
+};
+function describeAlbumQuery(query) {
+  return (
+    Object.entries(query)
+      .map(([key, value]) => {
+        const source =
+          key === "person_id"
+            ? catalogPeople
+            : key === "event"
+              ? allEvents
+              : key === "tag_id"
+                ? catalogTags
+                : [];
+        return `${filterLabels[key] || key}：${source.find((row) => row.id === value)?.name || value}`;
+      })
+      .join("；") || "全部照片"
+  );
+}
+async function previewAlbum() {
+  const serial = ++previewSerial;
+  $("save-album").disabled = true;
+  $("album-match-summary").textContent = "正在计算匹配照片…";
+  try {
+    const result = await api("/smart-albums/preview", {
+      method: "POST",
+      body: JSON.stringify({ query: readAlbumQuery() }),
+    });
+    if (serial !== previewSerial) return;
+    const counts = Object.entries(result.condition_counts)
+      .map(([key, count]) => `${filterLabels[key] || key}单独匹配 ${count} 张`)
+      .join("；");
+    $("album-match-summary").textContent = result.matched_assets
+      ? `同时满足所有条件：${result.matched_assets} 张，已关联 Immich：${result.mapped_assets} 张。`
+      : `没有同时满足所有条件的照片，请调整筛选。${counts}`;
+    $("album-preview-photos").replaceChildren();
+    for (const asset of result.assets) {
+      const image = node("img");
+      image.loading = "lazy";
+      image.src = `/api/v1/assets/${asset.id}/thumbnail`;
+      image.alt = "匹配照片预览";
+      $("album-preview-photos").append(image);
+    }
+    $("save-album").disabled = result.matched_assets === 0;
+    return result;
+  } catch (e) {
+    if (serial === previewSerial)
+      $("album-match-summary").textContent = e.message;
+    throw e;
+  }
+}
+async function editAlbum(album) {
+  const query = { ...album.query };
+  for (const [key, rows] of [
+    ["person", catalogPeople],
+    ["tag", catalogTags],
+  ]) {
+    if (query[key] && !query[key + "_id"]) {
+      const found = rows.filter((row) => row.name === query[key]);
+      if (found.length !== 1)
+        throw new Error("旧规则名称无法唯一对应，请先确认人物或标签名称");
+      query[key + "_id"] = found[0].id;
+    }
+  }
+  editingAlbum = album.id;
+  const form = $("album-form");
+  form.reset();
+  form.elements.name.value = album.name;
+  form.elements.name.readOnly = true;
+  for (const key of ["person_id", "tag_id", "event", "start", "end", "q"]) {
+    const field = form.elements[key];
+    const value = query[key] ?? "";
+    if (
+      field.tagName === "SELECT" &&
+      value !== "" &&
+      !Array.from(field.options).some((o) => o.value === String(value))
+    ) {
+      const option = node("option", describeAlbumQuery({ [key]: value }));
+      option.value = value;
+      field.append(option);
+    }
+    field.value = value;
+  }
+  $("album-form-title").textContent = "编辑相册条件";
+  $("save-album").textContent = "保存条件，自动同步";
+  $("cancel-album-edit").hidden = false;
+  notify(
+    "修改条件后仍使用同一个 Immich 相册。当前仅追加照片，不会移除已有照片。",
+  );
+  form.scrollIntoView({ behavior: "smooth" });
+  await previewAlbum();
+}
+$("cancel-album-edit").onclick = () => {
+  editingAlbum = null;
+  $("album-form").reset();
+  $("album-form").elements.name.readOnly = false;
+  $("album-form-title").textContent = "创建智能相册";
+  $("save-album").textContent = "创建，自动同步";
+  $("cancel-album-edit").hidden = true;
+  previewAlbum().catch((e) => notify(e.message));
+};
+$("album-form").oninput = () => {
+  clearTimeout(previewTimer);
+  ++previewSerial;
+  $("save-album").disabled = true;
+  previewTimer = setTimeout(
+    () => previewAlbum().catch((e) => notify(e.message)),
+    250,
+  );
+};
 $("album-form").onsubmit = async (event) => {
   event.preventDefault();
-  const b = event.target.querySelector("button");
-  b.disabled = true;
+  clearTimeout(previewTimer);
+  $("save-album").disabled = true;
   try {
-    const values = Object.fromEntries(new FormData(event.target));
-    const name = values.name.trim();
-    delete values.name;
-    const query = Object.fromEntries(
-      Object.entries(values).filter(([, v]) => v !== ""),
-    );
-    for (const key of ["event", "person_id", "tag_id"])
-      if (query[key]) query[key] = Number(query[key]);
-    await api("/smart-albums", {
+    const query = readAlbumQuery();
+    const preview = await api("/smart-albums/preview", {
       method: "POST",
-      body: JSON.stringify({ name, query }),
+      body: JSON.stringify({ query }),
     });
-    notify("相册已创建，后台将自动同步。");
+    if (!preview.matched_assets)
+      throw new Error("没有匹配照片，请先调整筛选条件。");
+    if (editingAlbum !== null)
+      await api(`/smart-albums/${editingAlbum}`, {
+        method: "PATCH",
+        body: JSON.stringify({ query }),
+      });
+    else
+      await api("/smart-albums", {
+        method: "POST",
+        body: JSON.stringify({
+          name: $("album-form").elements.name.value.trim(),
+          query,
+        }),
+      });
+    notify(
+      `条件已保存，匹配 ${preview.matched_assets} 张照片，后台将自动同步。`,
+    );
     await loadAlbums();
   } catch (e) {
     notify(e.message);
   } finally {
-    b.disabled = false;
+    previewAlbum().catch((e) => notify(e.message));
   }
 };
+previewAlbum().catch((e) => notify(e.message));
 Promise.all([loadTasks(), loadEvents(), loadCatalog(), loadAlbums()]).catch(
   (e) => notify(e.message),
 );

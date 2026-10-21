@@ -60,7 +60,7 @@ class AuraService:
     def list_events(self) -> list[dict[str, Any]]:
         return self.database.fetch_all("SELECT e.*, (SELECT COUNT(*) FROM event_assets ea JOIN assets a ON a.id=ea.asset_id WHERE ea.event_id=e.id AND a.missing_at IS NULL) AS asset_count FROM events e ORDER BY starts_at")
 
-    def create_smart_album(self, name: str, query: dict[str, Any]) -> dict[str, Any]:
+    def _stable_album_query(self, query: dict[str, Any]) -> dict[str, Any]:
         query = dict(query)
         for key, table in (("person", "people"), ("tag", "tags")):
             if query.get(key) and not query.get(key + "_id"):
@@ -68,6 +68,10 @@ class AuraService:
                 if len(matches) == 1:
                     query[key + "_id"] = matches[0]["id"]
                     del query[key]
+        return query
+
+    def create_smart_album(self, name: str, query: dict[str, Any]) -> dict[str, Any]:
+        query = self._stable_album_query(query)
         cursor = self.database.execute(
             "INSERT INTO smart_albums(name, query_json, created_at) VALUES (?, ?, ?)",
             [name, json.dumps(query, ensure_ascii=False), _now()],
@@ -85,11 +89,7 @@ class AuraService:
             raise ValueError(f"smart album not found: {smart_album_id}")
         album = albums[0]
         query = json.loads(album["query_json"])
-        assets = self.search_assets(
-            query=query.get("q"), start=query.get("start"), end=query.get("end"),
-            person=query.get("person"), tag=query.get("tag"), event=query.get("event"),
-            person_id=query.get("person_id"), tag_id=query.get("tag_id"),
-        )
+        assets = self._album_assets(query)
         mappings = self.database.fetch_all(
             "SELECT external_id FROM external_assets WHERE provider = 'immich' AND asset_id IN ({})".format(
                 ",".join("?" for _ in assets) or "''"
@@ -189,6 +189,7 @@ class AuraService:
         rows = self.database.fetch_all("SELECT * FROM smart_albums ORDER BY id DESC")
         for row in rows:
             row["query"] = json.loads(row.pop("query_json"))
+            row["matched_assets"] = len(self._album_assets(row["query"]))
         return rows
 
     def task_status(self) -> dict:
@@ -242,3 +243,29 @@ class AuraService:
             connection.execute("UPDATE asset_people SET review_state='rejected',reviewed=1,active=1 WHERE asset_id=? AND person_id=?",[asset_id,person_id])
             connection.execute("INSERT INTO asset_people(asset_id,person_id,source,review_state,reviewed) VALUES (?,?,'manual','confirmed',1) ON CONFLICT(asset_id,person_id) DO UPDATE SET review_state='confirmed',reviewed=1,active=1",[asset_id,replacement_id])
         return {'asset_id':asset_id,'person_id':replacement_id,'review_state':'confirmed'}
+
+    def _album_assets(self, query: dict) -> list[dict]:
+        return self.search_assets(
+            query=query.get("q"), start=query.get("start"), end=query.get("end"),
+            person=query.get("person"), tag=query.get("tag"), event=query.get("event"),
+            person_id=query.get("person_id"), tag_id=query.get("tag_id"),
+        )
+
+    def preview_album(self, query: dict) -> dict:
+        assets = self._album_assets(query)
+        mapped = {r['asset_id'] for r in self.database.fetch_all("SELECT asset_id FROM external_assets WHERE provider='immich'")}
+        return {
+            "matched_assets": len(assets),
+            "mapped_assets": sum(a['id'] in mapped for a in assets),
+            "condition_counts": {key:len(self._album_assets({key:value})) for key,value in query.items() if value is not None and value != ''},
+            "assets": [{"id":a['id'], "captured_at":a['captured_at']} for a in assets[:12]],
+        }
+
+    def update_smart_album_query(self, album_id: int, query: dict) -> dict:
+        query = self._stable_album_query(query)
+        with self.database.path.with_suffix(".albums.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not self.database.fetch_all("SELECT id FROM smart_albums WHERE id=?", [album_id]):
+                raise LookupError("smart album not found")
+            self.database.execute("UPDATE smart_albums SET query_json=?,materialized_at=NULL WHERE id=?", [json.dumps(query,ensure_ascii=False),album_id])
+        return {"id":album_id,"query":query}

@@ -79,7 +79,7 @@
         </div>
       </section>
       <section>
-        <h2>创建智能相册</h2>
+        <h2 id="album-form-title">创建智能相册</h2>
         <p class="hint">
           所有条件同时满足才会入选；当前版本自动追加照片。结束日期不包含当天。
         </p>
@@ -100,8 +100,13 @@
           ><label>开始日期<input name="start" type="date" /></label
           ><label>结束日期<input name="end" type="date" /></label
           ><label>文件路径包含<input name="q" /></label
-          ><button type="submit">创建，自动同步</button>
+          ><button id="save-album" type="submit">创建，自动同步</button
+          ><button id="cancel-album-edit" type="button" hidden>取消编辑</button>
         </form>
+        <p id="album-match-summary" role="status" aria-live="polite">
+          正在计算匹配照片…
+        </p>
+        <div id="album-preview-photos" class="photos"></div>
         <div id="albums" class="cards"></div>
       </section>
     </main>
