@@ -76,6 +76,22 @@ CREATE TABLE IF NOT EXISTS smart_albums (
   materialized_at TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS external_assets (
+  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY(asset_id, provider),
+  UNIQUE(provider, external_id)
+);
+CREATE TABLE IF NOT EXISTS external_albums (
+  smart_album_id INTEGER NOT NULL REFERENCES smart_albums(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY(smart_album_id, provider),
+  UNIQUE(provider, external_id)
+);
 """
 
 
@@ -95,8 +111,11 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
-            if connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
-                connection.execute("INSERT INTO schema_version(version) VALUES (1)")
+            current = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+            if current is None:
+                connection.execute("INSERT INTO schema_version(version) VALUES (2)")
+            elif current < 2:
+                connection.execute("UPDATE schema_version SET version = 2")
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self.connect() as connection:

@@ -15,3 +15,18 @@ class Settings:
         photo_root = Path(os.getenv("PHOTO_ROOT", "./sample-photos")).expanduser()
         db_path = Path(os.getenv("AURA_DB_PATH", "./data/aura.db")).expanduser()
         return cls(photo_root=photo_root, db_path=db_path)
+
+
+@dataclass(frozen=True)
+class ImmichConfig:
+    url: str
+    api_key: str
+    path_prefix: str
+
+    @classmethod
+    def from_env(cls) -> "ImmichConfig":
+        return cls(
+            url=os.getenv("IMMICH_URL", "").rstrip("/"),
+            api_key=os.getenv("IMMICH_API_KEY", ""),
+            path_prefix=os.getenv("IMMICH_PATH_PREFIX", "/photos").rstrip("/") or "/",
+        )

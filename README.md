@@ -68,6 +68,24 @@ still receives `/photos` read-only. The password is visible to the Docker
 daemon as a volume option, so use a dedicated read-only NAS account and never
 commit `.env`.
 
+## Start Immich together
+
+Immich is optional. To start Aura, Immich, machine learning, Valkey, and
+Postgres in one Compose project, fill the `IMMICH_*` values in `.env` and run:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.immich.yml \
+  --profile immich up -d --build
+```
+
+Immich listens on `http://<sidecar-ip>:2283`; Aura listens on the configured
+`AURA_PORT`. The same read-only SMB volume is mounted into Aura and Immich at
+`/photos`. In Immich, create an External Library pointing to `/photos` and
+scan it. The Immich database is kept on the sidecar's local disk; do not put
+`IMMICH_DB_DATA_LOCATION` on the NAS network share.
+
 The sidecar host must have the CIFS mount helper installed. On Debian or
 Ubuntu, run `sudo apt install cifs-utils` once. If the password contains `$`,
 put the value in single quotes in `.env`, for example
@@ -92,10 +110,27 @@ POST /api/v1/tags
 POST /api/v1/events
 POST /api/v1/events/candidates
 POST /api/v1/smart-albums
+GET  /api/v1/integrations/immich
+POST /api/v1/integrations/immich/sync-assets
+POST /api/v1/assets/{id}/external
+POST /api/v1/smart-albums/{id}/materialize
 ```
 
 The API is intentionally small. The companion Web UI and an Immich adapter
 should depend on these interfaces rather than on SQLite tables directly.
+
+## Immich adapter
+
+Set `IMMICH_URL` and `IMMICH_API_KEY` in `.env` only after Immich is running.
+The adapter uses the public HTTP API and stores only the mapping between Aura
+asset IDs and Immich asset IDs. It never writes to Immich's Postgres database.
+The API key should be restricted to asset and album permissions. Run
+`GET /api/v1/integrations/immich` before materializing an album.
+Set `IMMICH_PATH_PREFIX=/photos` when the Immich external library uses the
+same `/photos` container path as Aura. Then call
+`POST /api/v1/integrations/immich/sync-assets`; it matches by path first, then
+by a unique filename. Ambiguous or missing matches are reported and never
+guessed.
 
 ## 0.1 limits
 

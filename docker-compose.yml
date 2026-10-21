@@ -5,6 +5,9 @@ services:
     environment:
       PHOTO_ROOT: /photos
       AURA_DB_PATH: /data/aura.db
+      IMMICH_URL: ${IMMICH_URL:-}
+      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
+      IMMICH_PATH_PREFIX: ${IMMICH_PATH_PREFIX:-/photos}
     ports:
       - "${AURA_PORT:-8080}:8080"
     volumes:
@@ -20,6 +23,9 @@ services:
     environment:
       PHOTO_ROOT: /photos
       AURA_DB_PATH: /data/aura.db
+      IMMICH_URL: ${IMMICH_URL:-}
+      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
+      IMMICH_PATH_PREFIX: ${IMMICH_PATH_PREFIX:-/photos}
     volumes:
       - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
       - "${AURA_DATA_DIR:-./data}:/data"
