@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from io import BytesIO
+from pathlib import Path
+from typing import Literal
 
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps
+from pydantic import BaseModel, Field, ConfigDict
+
+from . import __version__
 from .config import Settings
 from .config import ImmichConfig
 from .db import Database
@@ -16,16 +24,31 @@ settings = Settings.from_env()
 database = Database(settings.db_path)
 service = AuraService(database)
 immich_config = ImmichConfig.from_env()
-app = FastAPI(title="Aura", version="0.1.0")
+app = FastAPI(title="Aura", version=__version__)
 
 
 class ScanRequest(BaseModel):
     dry_run: bool = False
 
 
+class AlbumQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    q: str | None = None
+    person: str | None = None
+    tag: str | None = None
+    event: int | None = Field(default=None, gt=0)
+    start: str | None = None
+    end: str | None = None
+
+
 class SmartAlbumRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    query: dict
+    query: AlbumQuery
+
+
+class ReviewRequest(BaseModel):
+    state: Literal["pending", "confirmed", "rejected"]
+    name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class NamedRequest(BaseModel):
@@ -44,7 +67,7 @@ class ExternalAssetRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": __version__}
 
 
 @app.post("/api/v1/scans")
@@ -100,7 +123,7 @@ def create_event(request: EventRequest) -> dict:
 
 @app.post("/api/v1/smart-albums", status_code=201)
 def smart_album(request: SmartAlbumRequest) -> dict:
-    return service.create_smart_album(request.name, request.query)
+    return service.create_smart_album(request.name, request.query.model_dump(exclude_none=True))
 
 
 @app.get("/api/v1/integrations/immich")
@@ -119,7 +142,7 @@ def sync_immich_assets() -> dict[str, int]:
     if not immich_config.url or not immich_config.api_key:
         raise ValueError("IMMICH_URL and IMMICH_API_KEY must be configured")
     client = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key))
-    return service.sync_immich_asset_mappings(client, immich_config.path_prefix)
+    return service.sync_immich_asset_mappings(client, immich_config.path_prefix, str(settings.photo_root.resolve()))
 
 
 @app.post("/api/v1/assets/{asset_id}/external", status_code=201)
@@ -132,3 +155,72 @@ def materialize_smart_album(smart_album_id: int) -> dict:
     if not immich_config.url or not immich_config.api_key:
         raise ValueError("IMMICH_URL and IMMICH_API_KEY must be configured")
     return service.materialize_smart_album(smart_album_id, ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key)))
+
+
+@app.exception_handler(LookupError)
+def missing_record(request, error):
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(ValueError)
+def invalid_value(request, error):
+    return JSONResponse(status_code=400, content={"detail": str(error)})
+
+
+@app.exception_handler(ImmichError)
+def remote_failure(request, error):
+    return JSONResponse(status_code=502, content={"detail": str(error)})
+
+
+@app.get("/api/v1/tasks")
+def task_status() -> dict:
+    return service.task_status()
+
+
+@app.get("/api/v1/smart-albums")
+def smart_albums() -> list[dict]:
+    return service.list_smart_albums()
+
+
+@app.patch("/api/v1/events/{event_id}")
+def review_event(event_id: int, request: ReviewRequest) -> dict:
+    return service.review_event(event_id, request.state, request.name)
+
+
+@app.get("/api/v1/tag-assignments")
+def tag_assignments() -> list[dict]:
+    return service.list_tag_assignments()
+
+
+@app.patch("/api/v1/assets/{asset_id}/tags/{tag_id}")
+def review_tag(asset_id: int, tag_id: int, request: ReviewRequest) -> dict:
+    return service.review_tag(asset_id, tag_id, request.state)
+
+
+@app.get("/api/v1/assets/{asset_id}/thumbnail")
+def thumbnail(asset_id: int):
+    rows = database.fetch_all("SELECT path FROM assets WHERE id=? AND missing_at IS NULL", [asset_id])
+    if not rows:
+        raise HTTPException(404, "photo not found")
+    path = Path(rows[0]["path"]).resolve()
+    if not path.is_relative_to(settings.photo_root.resolve()):
+        raise HTTPException(403, "photo outside configured library")
+    try:
+        with Image.open(path) as source:
+            source.draft("RGB", (480, 480))
+            source.thumbnail((480, 480))
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=75)
+        return Response(output.getvalue(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+    except (OSError, ValueError, Image.DecompressionBombError):
+        raise HTTPException(404, "preview unavailable")
+
+
+static_root = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=static_root), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(static_root / "index.html")

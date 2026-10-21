@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aura"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local NAS photo indexing companion for people, events, tags, and smart albums"
 requires-python = ">=3.11"
 dependencies = [
@@ -27,3 +27,9 @@ aura-worker = "aura.worker:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["aura*"]
+
+[tool.setuptools.package-data]
+aura = ["static/*.html", "static/*.css", "static/*.js"]

@@ -6,44 +6,49 @@ from .db import Database
 
 
 def build_day_candidates(database: Database, gap_hours: int = 6) -> int:
-    """Create replaceable day-level event candidates from capture times.
-
-    This is intentionally deterministic and conservative. A later adapter can
-    add GPS, people, and visual embeddings without changing the event tables.
-    Only unconfirmed candidates are replaced, so user decisions are preserved.
-    """
-    rows = database.fetch_all(
-        "SELECT id, captured_at FROM assets WHERE missing_at IS NULL AND captured_at IS NOT NULL ORDER BY captured_at, id"
-    )
-    groups: list[list[dict]] = []
-    for row in rows:
-        captured = datetime.fromisoformat(row["captured_at"])
-        if not groups:
-            groups.append([row])
-            continue
-        previous = datetime.fromisoformat(groups[-1][-1]["captured_at"])
-        if captured.date() != previous.date() or captured - previous > timedelta(hours=gap_hours):
-            groups.append([row])
-        else:
-            groups[-1].append(row)
-
+    """Reuse candidate identities and leave reviewed memberships untouched."""
+    database.initialize()
     with database.connect() as connection:
-        candidate_ids = [row["id"] for row in connection.execute("SELECT id FROM events WHERE confirmed = 0 AND source = 'candidate'").fetchall()]
-        if candidate_ids:
-            marks = ",".join("?" for _ in candidate_ids)
-            connection.execute(f"DELETE FROM event_assets WHERE event_id IN ({marks})", candidate_ids)
-            connection.execute(f"DELETE FROM events WHERE id IN ({marks})", candidate_ids)
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT id, captured_at FROM assets WHERE missing_at IS NULL AND captured_at IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM event_assets ea JOIN events e ON e.id = ea.event_id "
+            "WHERE ea.asset_id = assets.id AND e.review_state IN ('confirmed', 'rejected')) "
+            "ORDER BY captured_at, id"
+        ).fetchall()
+        groups = []
+        for row in rows:
+            captured = datetime.fromisoformat(row["captured_at"])
+            previous = datetime.fromisoformat(groups[-1][-1]["captured_at"]) if groups else None
+            if previous is None or captured.date() != previous.date() or captured - previous > timedelta(hours=gap_hours):
+                groups.append([])
+            groups[-1].append(row)
+        old = {}
+        for row in connection.execute(
+            "SELECT e.id, ea.asset_id FROM events e LEFT JOIN event_assets ea ON ea.event_id = e.id "
+            "WHERE e.source = 'candidate' AND e.review_state = 'pending' ORDER BY e.id"
+        ):
+            old.setdefault(row["id"], set()).add(row["asset_id"])
+        used = set()
         created = 0
         for group in groups:
-            start = datetime.fromisoformat(group[0]["captured_at"])
-            end = datetime.fromisoformat(group[-1]["captured_at"])
-            name = start.date().isoformat() if start.date() == end.date() else f"{start.date()} – {end.date()}"
-            cursor = connection.execute(
-                "INSERT INTO events(name, starts_at, ends_at, level, confirmed, source, created_at) VALUES (?, ?, ?, 'day', 0, 'candidate', datetime('now'))",
-                [name, group[0]["captured_at"], group[-1]["captured_at"]],
-            )
-            event_id = cursor.lastrowid
-            connection.executemany("INSERT INTO event_assets(event_id, asset_id, confidence) VALUES (?, ?, ?)", [(event_id, row["id"], 1.0) for row in group])
-            created += 1
-        connection.commit()
-    return created
+            ids = {row["id"] for row in group}
+            available = [(len(ids & members), -event_id, event_id) for event_id, members in old.items() if event_id not in used]
+            best = max(available, default=(0, 0, None))
+            event_id = best[2] if best[0] else None
+            if event_id is None:
+                cursor = connection.execute(
+                    "INSERT INTO events(name, starts_at, ends_at, source, created_at) VALUES (?, ?, ?, 'candidate', datetime('now'))",
+                    [datetime.fromisoformat(group[0]["captured_at"]).date().isoformat(), group[0]["captured_at"], group[-1]["captured_at"]],
+                )
+                event_id = cursor.lastrowid
+                created += 1
+            else:
+                connection.execute("UPDATE events SET starts_at = ?, ends_at = ? WHERE id = ?", [group[0]["captured_at"], group[-1]["captured_at"], event_id])
+                connection.execute("DELETE FROM event_assets WHERE event_id = ?", [event_id])
+            used.add(event_id)
+            connection.executemany("INSERT INTO event_assets(event_id, asset_id, confidence) VALUES (?, ?, 1)", [(event_id, row["id"]) for row in group])
+        for event_id in old.keys() - used:
+            # Keep IDs reserved: saved album rules must never point to a different event.
+            connection.execute("UPDATE events SET review_state = 'superseded' WHERE id = ?", [event_id])
+        return created

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Aura · 照片管理</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <strong>Aura</strong><span>照片留在 NAS，回忆聚在一起</span>
+    </header>
+    <main>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section>
+        <h1>照片与任务</h1>
+        <p id="status">正在读取状态…</p>
+        <div id="tasks" class="cards"></div>
+        <p class="hint">
+          扫描自动执行；相册约每分钟同步一次。首次扫描期间请等待。
+        </p>
+      </section>
+      <section>
+        <div class="heading">
+          <h2>事件审核</h2>
+          <select id="event-state" aria-label="审核状态">
+            <option value="pending">待审核</option>
+            <option value="confirmed">已确认</option>
+            <option value="rejected">已拒绝</option>
+            <option value="superseded">已被重新分组</option>
+          </select>
+        </div>
+        <div id="events" class="cards"></div>
+        <button id="more-events" hidden>查看更多事件</button>
+      </section>
+      <section id="preview-section" hidden>
+        <h2 id="preview-title">事件照片</h2>
+        <div id="photos" class="photos"></div>
+        <button id="more-photos" hidden>查看更多照片</button>
+      </section>
+      <section>
+        <h2>人物与标签</h2>
+        <p class="hint">显示当前已有记录；自动识别接入安排在 0.3。</p>
+        <p id="people"></p>
+        <p id="tags"></p>
+        <h3>照片标签审核</h3>
+        <div id="assignments" class="cards"></div>
+      </section>
+      <section>
+        <h2>创建智能相册</h2>
+        <p class="hint">
+          所有条件同时满足才会入选；当前版本自动追加照片。结束日期不包含当天。
+        </p>
+        <form id="album-form">
+          <label>相册名称<input name="name" required maxlength="200" /></label
+          ><label
+            >人物<select name="person" id="person-filter">
+              <option value="">不限</option>
+            </select></label
+          ><label
+            >事件<select name="event" id="event-filter">
+              <option value="">不限</option>
+            </select></label
+          ><label
+            >标签<select name="tag" id="tag-filter">
+              <option value="">不限</option>
+            </select></label
+          ><label>开始日期<input name="start" type="date" /></label
+          ><label>结束日期<input name="end" type="date" /></label
+          ><label>文件路径包含<input name="q" /></label
+          ><button type="submit">创建，自动同步</button>
+        </form>
+        <div id="albums" class="cards"></div>
+      </section>
+    </main>
+  </body>
+</html>

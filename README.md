@@ -1,4 +1,4 @@
-# Aura 0.1
+# Aura 0.2
 
 Aura 在 sidecar 上索引 NAS 照片，Immich 提供浏览和相册。原图通过 SMB 只读挂载，服务不会移动、删除或改写原图。
 
@@ -64,7 +64,7 @@ docker compose -f docker-compose.yml -f docker-compose.smb.yml \
 - 立即扫描照片；
 - 生成事件候选；
 - 配置 Immich API key 后，自动映射资产和同步智能相册；
-- 按 `AURA_SCAN_INTERVAL` 重复执行（默认 24 小时）。
+- 扫描按 `AURA_SCAN_INTERVAL` 重复执行（默认 24 小时）；相册约每分钟同步，失败自动重试。
 
 无需手工运行扫描、事件或同步命令。查看进度：
 
@@ -107,9 +107,13 @@ curl http://127.0.0.1:18080/api/v1/integrations/immich
 
 外部库必须和 API key 属于同一用户，否则可能得到 `remote_assets: 0`。
 
-## 6. 智能相册
+## 6. 审核与智能相册
 
-创建规则后，worker 会自动同步：
+打开 `http://<sidecar-IP>:18080`：查看任务状态 → 预览事件照片 → 命名并确认 → 选择人物、事件、标签和时间创建相册。多个条件同时满足才会入选。
+
+审核决定会保留；智能相册自动同步到 Immich。当前仅追加照片，人物识别和自动标签接入见路线图 0.3。
+
+也可通过 API 创建（`event` 替换为实际事件 ID）：
 
 ```bash
 curl -X POST http://127.0.0.1:18080/api/v1/smart-albums \
@@ -117,7 +121,7 @@ curl -X POST http://127.0.0.1:18080/api/v1/smart-albums \
   -d '{"name":"上海活动","query":{"event":1}}'
 ```
 
-已存在的智能相册也会在下一轮自动同步。接口仍支持手工触发，但不是必需步骤。
+首次升级会自动迁移数据库，已有事件和相册保留。
 
 ## 7. 检查和排错
 
@@ -138,7 +142,7 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
 
 ## 8. 数据和升级
 
-备份 `./data/aura.db`、`./immich/postgres`、`./immich/library`、`.env` 和 NAS 原图。数据库不要放在 SMB 上。
+运行数据位于 `./data`、`./immich/postgres` 和 `./immich/library`；配置在 `.env`。升级时保留这些目录，数据库不要放在 SMB 上。
 
 `IMMICH_VERSION` 初期可用 `release`；稳定后改为已验证的具体版本。
 
@@ -146,6 +150,11 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
 
 ```text
 GET  /health
+GET  /api/v1/tasks
+GET  /api/v1/smart-albums
+PATCH /api/v1/events/{id}
+GET  /api/v1/tag-assignments
+PATCH /api/v1/assets/{asset_id}/tags/{tag_id}
 GET  /api/v1/assets
 GET  /api/v1/search/parse
 GET  /api/v1/people

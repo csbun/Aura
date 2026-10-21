@@ -47,7 +47,6 @@ class ImmichClient:
             raise ImmichError(f"Immich request failed: {method} {path}: {detail}") from error
 
     def server_info(self) -> dict:
-        # Immich v3 moved the health route to /api/server/ping.
         return self._request("GET", "/api/server/ping")
 
     def list_albums(self) -> list[dict]:
@@ -82,7 +81,12 @@ class ImmichClient:
 
     def add_assets(self, album_id: str, asset_ids: list[str]) -> None:
         if asset_ids:
-            self._request("PUT", f"/api/albums/{quote(album_id, safe='')}/assets", {"ids": asset_ids})
+            result = self._request("PUT", f"/api/albums/{quote(album_id, safe='')}/assets", {"ids": asset_ids})
+            if not isinstance(result, list) or not all(isinstance(item, dict) for item in result):
+                raise ImmichError("unexpected album membership response")
+            accepted = {str(item.get("id") or item.get("assetId")) for item in result if item.get("success") is True or item.get("error") == "duplicate"}
+            if set(asset_ids) - accepted:
+                raise ImmichError("Immich did not accept all album assets; retry scheduled")
 
     def ensure_album(self, name: str) -> dict:
         for album in self.list_albums():

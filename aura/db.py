@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS external_albums (
 """
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class Database:
     """Deep storage module: owns schema creation and transaction boundaries."""
 
@@ -103,7 +111,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=30, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -111,11 +119,18 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
-            current = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-            if current is None:
-                connection.execute("INSERT INTO schema_version(version) VALUES (2)")
-            elif current < 2:
-                connection.execute("UPDATE schema_version SET version = 2")
+            connection.execute("BEGIN IMMEDIATE")
+            for table in ("events", "asset_tags"):
+                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if "review_state" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN review_state TEXT NOT NULL DEFAULT 'pending'")
+                    if table == "events":
+                        connection.execute("UPDATE events SET review_state = 'confirmed' WHERE confirmed = 1")
+                    else:
+                        connection.execute("UPDATE asset_tags SET review_state = 'confirmed' WHERE source = 'manual'")
+            connection.execute("CREATE TABLE IF NOT EXISTS task_status (name TEXT PRIMARY KEY, state TEXT NOT NULL, started_at TEXT, finished_at TEXT, result_json TEXT, error TEXT)")
+            connection.execute("DELETE FROM schema_version")
+            connection.execute("INSERT INTO schema_version(version) VALUES (3)")
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self.connect() as connection:
