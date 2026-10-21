@@ -46,6 +46,7 @@ services:
       - immich_model_cache:/cache
     environment:
       MACHINE_LEARNING_MODEL_REVISION: v2
+      HF_ENDPOINT: ${IMMICH_ML_HF_ENDPOINT:-https://huggingface.co}
     restart: always
 
   redis:

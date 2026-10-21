@@ -92,7 +92,7 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
    IMMICH_API_KEY='API key'
    ```
 
-   API key 需允许照片读取/搜索、相册创建/追加和任务读取/创建。原有完整权限 key 无需修改；人脸识别保持 Immich 默认启用。
+   API key 需允许照片读取/搜索、人物读取、相册创建/追加和任务读取/创建。原有完整权限 key 无需修改；人脸识别保持 Immich 默认启用。
 
 更新 Aura 和 worker，使其读取 API key：
 
@@ -144,6 +144,7 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
 
 - `Cannot GET /api/server-info`：当前健康接口是 `/api/server/ping`。
 - `remote_assets: 0`：检查 `/photos` 外部库是否扫描完成，以及 API key 用户是否一致。
+- 人脸队列空闲但没有人物：检查机器学习容器日志。若模型源不可达，可设置 `IMMICH_ML_HF_ENDPOINT=https://hf-mirror.com` 并重建 `immich-machine-learning`；模型缓存保留在 Docker 卷中。
 - SMB 失败：检查 `cifs-utils`、共享名、账号权限和 TCP 445。
 
 ## 8. 数据和升级

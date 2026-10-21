@@ -8,6 +8,7 @@ const states = {
   complete: "完成",
   failed: "失败，自动重试",
   interrupted: "上次运行中断",
+  no_people: "未发现人物",
 };
 let lastScan = null,
   lastRecognition = null;
@@ -80,9 +81,13 @@ async function loadTasks() {
     const displayState =
       task.name === "face_jobs" &&
       task.state === "complete" &&
-      task.result?.phase !== "done"
-        ? "running"
-        : task.state;
+      task.result?.phase === "no_people"
+        ? "no_people"
+        : task.name === "face_jobs" &&
+            task.state === "complete" &&
+            task.result?.phase !== "done"
+          ? "running"
+          : task.state;
     const card = node("div", undefined, "card");
     card.append(
       node(
@@ -93,6 +98,7 @@ async function loadTasks() {
       node("p", `完成：${time(task.finished_at)}`),
     );
     if (task.error) card.append(node("p", task.error));
+    if (task.result?.warning) card.append(node("p", task.result.warning));
     if (task.name === "face_jobs" && task.result)
       card.append(
         node(
@@ -101,7 +107,8 @@ async function loadTasks() {
             waiting_for_library: "等待照片映射",
             detection: "正在检测人脸",
             recognition: "正在聚合人物",
-            done: "人脸任务已完成",
+            done: "Immich 已生成人物",
+            no_people: "队列已空闲，尚未生成人物",
           }[task.result.phase] || task.result.phase,
         ),
       );

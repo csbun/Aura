@@ -129,3 +129,9 @@ class ImmichClient:
         if queue not in {"faceDetection", "facialRecognition"}:
             raise ValueError("invalid face queue")
         self._request("PUT", f"/api/jobs/{queue}", {"command": "start", "force": False})
+
+    def people_count(self) -> int:
+        result = self._request("GET", "/api/people?size=1&withHidden=true")
+        if not isinstance(result, dict) or type(result.get("total")) is not int or result["total"] < 0:
+            raise ImmichError("unexpected Immich people count response")
+        return result["total"]

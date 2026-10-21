@@ -194,6 +194,7 @@ def test_face_bootstrap_runs_in_order_and_survives_restart(service):
         def face_queues(self):
             return {name:{'queueStatus':{'isPaused':False,'isActive':False},'jobCounts':{'active':int(self.busy),'waiting':0,'failed':0}} for name in ['faceDetection','facialRecognition']}
         def start_missing_faces(self,name): self.starts.append(name)
+        def people_count(self): return 1
     client=Jobs()
     assert ensure_face_jobs(service.database,client)['phase']=='detection'
     client.busy=True
@@ -239,3 +240,44 @@ def test_worker_imports_before_materializing_combined_album(service,monkeypatch)
     tasks={row['name']:row for row in service.task_status()['tasks']}
     assert tasks['face_jobs']['state']=='failed'
     assert tasks['recognition']['state']=='complete'
+
+
+def test_empty_queues_without_people_do_not_report_success(service):
+    from aura.enrichment import ensure_face_jobs
+    asset(service)
+    service.database.execute("INSERT INTO integration_state(name,value) VALUES ('face_bootstrap','recognition')")
+    class Jobs:
+        count = 0
+        def face_queues(self):
+            return {name:{'queueStatus':{'isPaused':False,'isActive':False},'jobCounts':{'active':0,'waiting':0,'failed':0}} for name in ['faceDetection','facialRecognition']}
+        def people_count(self): return self.count
+    client = Jobs()
+    result = ensure_face_jobs(service.database, client)
+    assert result['phase'] == 'no_people'
+    assert result['people'] == 0
+    assert 'warning' in result
+    # Results appearing later must clear the warning and refresh imported details.
+    client.count = 2
+    assert ensure_face_jobs(service.database, client)['phase'] == 'done'
+
+
+def test_previous_false_done_state_is_rechecked(service):
+    from aura.enrichment import ensure_face_jobs
+    asset(service)
+    service.database.execute("INSERT INTO integration_state(name,value) VALUES ('face_bootstrap','done')")
+    class Jobs:
+        def people_count(self): return 0
+        def face_queues(self):
+            return {name:{'queueStatus':{'isPaused':False,'isActive':False},'jobCounts':{'active':0,'waiting':0,'failed':0}} for name in ['faceDetection','facialRecognition']}
+    assert ensure_face_jobs(service.database, Jobs())['phase'] == 'no_people'
+
+
+def test_completed_bootstrap_tracks_new_running_face_jobs(service):
+    from aura.enrichment import ensure_face_jobs
+    asset(service)
+    service.database.execute("INSERT INTO integration_state(name,value) VALUES ('face_bootstrap','no_people')")
+    class Jobs:
+        def people_count(self): return 0
+        def face_queues(self):
+            return {name:{'queueStatus':{'isPaused':False,'isActive':name=='faceDetection'},'jobCounts':{'active':1 if name=='faceDetection' else 0,'waiting':5 if name=='faceDetection' else 0,'failed':0}} for name in ['faceDetection','facialRecognition']}
+    assert ensure_face_jobs(service.database, Jobs())['phase'] == 'detection'

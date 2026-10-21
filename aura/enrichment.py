@@ -140,15 +140,41 @@ class RecognitionSync:
             return {**self.progress(), 'processed': processed, 'errors': errors}
 
 
+def _face_result(database: Database, client: ImmichClient, previous: str) -> dict:
+    # Immich removes finished queue entries, and handler errors can leave zero
+    # failed entries. An idle queue alone cannot prove recognition succeeded.
+    count = client.people_count()
+    phase = 'done' if count else 'no_people'
+    if phase == 'done' and previous != 'done':
+        database.execute("UPDATE enrichment_state SET next_attempt_at=?", [_now().isoformat()])
+    database.execute("INSERT INTO integration_state(name,value) VALUES ('face_bootstrap',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", [phase])
+    result = {'phase': phase, 'people': count}
+    if not count:
+        result['warning'] = 'Immich 队列已空闲，但未生成人物。请检查人脸模型下载和机器学习日志；队列空闲不代表识别成功。'
+    return result
+
+
 def ensure_face_jobs(database: Database, client: ImmichClient) -> dict:
     """Bootstrap missing recognition work once; never force-reprocess the library."""
     rows = database.fetch_all("SELECT value FROM integration_state WHERE name='face_bootstrap'")
     phase = rows[0]['value'] if rows else 'new'
-    if phase == 'done':
-        return {'phase': phase}
     if not database.fetch_all("SELECT 1 FROM external_assets WHERE provider='immich' LIMIT 1"):
         return {'phase': 'waiting_for_library'}
     queues = client.face_queues()
+    if phase in {'done', 'no_people'}:
+        # A user or Immich may start another pass after the first bootstrap.
+        # Continue observing it instead of treating the old checkpoint as final.
+        for stage, queue_name in (('detection', 'faceDetection'), ('recognition', 'facialRecognition')):
+            queue = queues[queue_name]
+            counts = queue['jobCounts']
+            if queue['queueStatus'].get('isPaused'):
+                raise ImmichError(f"Immich {queue_name} is paused")
+            if counts.get('failed', 0):
+                raise ImmichError(f"Immich {queue_name}: {counts['failed']} failed jobs")
+            if queue['queueStatus'].get('isActive') or any(counts.get(k, 0) for k in ('active', 'waiting', 'delayed', 'paused')):
+                database.execute("UPDATE integration_state SET value=? WHERE name='face_bootstrap'", [stage])
+                return {'phase': stage, 'active': counts.get('active', 0), 'waiting': counts.get('waiting', 0)}
+        return _face_result(database, client, phase)
     name = 'facialRecognition' if phase == 'recognition' else 'faceDetection'
     queue = queues[name]
     counts = queue['jobCounts']
@@ -169,8 +195,6 @@ def ensure_face_jobs(database: Database, client: ImmichClient) -> dict:
             client.start_missing_faces('facialRecognition')
         phase = 'recognition'
     elif phase == 'recognition' and not busy:
-        phase = 'done'
-        # Asset details may have been imported before recognition finished.
-        database.execute("UPDATE enrichment_state SET next_attempt_at=?", [_now().isoformat()])
+        return _face_result(database, client, phase)
     database.execute("INSERT INTO integration_state(name,value) VALUES ('face_bootstrap',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",[phase])
     return {'phase':phase, 'active':counts.get('active',0), 'waiting':counts.get('waiting',0)}
