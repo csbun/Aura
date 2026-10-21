@@ -1,17 +1,20 @@
+x-aura-environment: &aura-environment
+  AURA_DB_PATH: /data/aura.db
+  AURA_EVENT_INTERVAL: ${AURA_EVENT_INTERVAL:-86400}
+  AURA_ALBUM_INTERVAL: ${AURA_ALBUM_INTERVAL:-300}
+  IMMICH_URL: ${IMMICH_URL:-}
+  IMMICH_API_KEY: ${IMMICH_API_KEY:-}
+  IMMICH_PUBLIC_URL: ${IMMICH_PUBLIC_URL:-}
+  IMMICH_PORT: ${IMMICH_PORT:-2283}
+
 services:
   aura:
     build: .
     restart: unless-stopped
-    environment:
-      PHOTO_ROOT: /photos
-      AURA_DB_PATH: /data/aura.db
-      IMMICH_URL: ${IMMICH_URL:-}
-      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
-      IMMICH_PATH_PREFIX: ${IMMICH_PATH_PREFIX:-/photos}
+    environment: *aura-environment
     ports:
-      - "${AURA_PORT:-8080}:8080"
+      - "${AURA_PORT:-18080}:8080"
     volumes:
-      - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
       - "${AURA_DATA_DIR:-./data}:/data"
     read_only: true
     tmpfs:
@@ -20,32 +23,10 @@ services:
   aura-worker:
     build: .
     restart: unless-stopped
-    environment:
-      PHOTO_ROOT: /photos
-      AURA_DB_PATH: /data/aura.db
-      AURA_SCAN_INTERVAL: ${AURA_SCAN_INTERVAL:-86400}
-      IMMICH_URL: ${IMMICH_URL:-}
-      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
-      IMMICH_PATH_PREFIX: ${IMMICH_PATH_PREFIX:-/photos}
+    environment: *aura-environment
     volumes:
-      - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
       - "${AURA_DATA_DIR:-./data}:/data"
     read_only: true
     tmpfs:
       - /tmp
     command: ["aura-worker"]
-
-  aura-scan:
-    build: .
-    profiles: ["jobs"]
-    environment:
-      PHOTO_ROOT: /photos
-      AURA_DB_PATH: /data/aura.db
-      IMMICH_URL: ${IMMICH_URL:-}
-      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
-      IMMICH_PATH_PREFIX: ${IMMICH_PATH_PREFIX:-/photos}
-    volumes:
-      - "${PHOTO_ROOT:-./sample-photos}:/photos:ro"
-      - "${AURA_DATA_DIR:-./data}:/data"
-    entrypoint: ["aura-scan"]
-

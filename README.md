@@ -1,178 +1,119 @@
-# Aura 0.3
+# Aura 0.4
 
-Aura 在 sidecar 上索引 NAS 照片，Immich 提供浏览和相册。原图通过 SMB 只读挂载，服务不会移动、删除或改写原图。
+Immich 管理照片、缩略图、人物、标签和识别任务。Aura 只做**事件整理、组合查询和动态相册规则**，不修改 Immich 源码、不访问其数据库、不扫描或挂载原图。
 
-## 1. 准备
+日常浏览、人物命名和纠正在 Immich 完成；在 Aura 配置规则，然后回 Immich 看相册。
 
-sidecar（Ubuntu/Debian x86_64）安装 Docker、Compose 和 CIFS 工具：
+## 安装：已有 Immich
 
-```bash
-sudo apt update && sudo apt install -y cifs-utils
-docker --version
-docker compose version
-```
-
-fnOS：**设置 → 文件共享协议 → SMB**，给用户 `hans` 照片目录读取权限。若地址是 `smb://192.168.122.10/photos`，共享名就是 `photos`。
-
-## 2. 配置
-
-```bash
-cp .env.example .env
-chmod 600 .env
-```
-
-编辑至少这些值：
+需要 Docker 和 Compose。在 Immich 外部库所属用户下创建 API key，复制 `.env.example` 为 `.env`（`chmod 600 .env`），填写：
 
 ```env
-NAS_HOST=192.168.122.10
-NAS_SHARE=photos
-NAS_USER=hans
-NAS_PASSWORD='SMB密码'
-NAS_SMB_VERSION=3.0
+IMMICH_URL=http://<Immich的局域网IP>:2283
+IMMICH_PUBLIC_URL=http://<浏览器可访问的Immich地址>:2283
+IMMICH_API_KEY='你的key'
 AURA_PORT=18080
-AURA_SCAN_INTERVAL=86400
-
-IMMICH_DB_PASSWORD='只含字母和数字的随机密码'
-IMMICH_API_KEY=
-IMMICH_PATH_PREFIX=/photos
 ```
 
-密码含 `$` 时使用单引号。`.env` 不要提交到 Git。
+`IMMICH_URL` 必须能从 Aura 容器访问，不能用宿主机的 `127.0.0.1`。`IMMICH_PUBLIC_URL` 留空时使用当前浏览器主机名和 `IMMICH_PORT`。
 
-## 3. 启动
-
-### Aura + Immich（推荐）
+API key 权限：`user.read`、`asset.read`、`asset.view`、`person.read`、`tag.read`、`album.read`、`album.create`、`albumAsset.create`、`albumAsset.delete`。完整权限 key 可继续用；迁移旧人物名称还需 `person.update`，执行写入兼容测试时还需 `album.delete`。
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich up -d --build
+docker compose up -d --build
 ```
 
-Aura 在 `18080`，Immich 在 `2283`。两者都把 SMB 挂载为 `/photos`。
+打开 `http://<主机IP>:18080`。无需 SMB 配置或手动扫描任务。
 
-### 仅 Aura
+## 安装：同时部署 Immich + NAS 外部库
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.smb.yml \
-  up -d --build
-```
+2GB 内存 NAS 只提供文件；整套应用、数据库和模型放在 Ubuntu 主机。原图不复制，通过 SMB 只读提供给 Immich。
 
-## 4. 自动任务
-
-启动后 `aura-worker` 会自动：
-
-- 立即扫描照片；
-- 生成事件候选和年份、画幅、定位状态标签；
-- 配置 Immich API key 后，自动映射照片、补交缺失人脸任务、导入人物/标签、同步智能相册；
-- 扫描按 `AURA_SCAN_INTERVAL` 重复执行（默认 24 小时）；相册约每分钟同步，失败自动重试。
-
-无需手工运行扫描、事件或同步命令。查看进度：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich logs -f aura-worker
-```
-
-修改周期后重建 worker：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich up -d --build aura-worker
-```
-
-## 5. Immich 只需配置一次外部库
-
-1. 打开 `http://<sidecar-IP>:2283`，完成初始化。
-2. **Administration → External Libraries → Create**。
-3. 选择将用于 API key 的同一个用户。
-4. 添加路径 `/photos`，点击 **Scan**，等待任务完成。
-5. 在该用户设置中创建 API key，写入 `.env`：
+1. 主机安装 Docker、Compose 和 `cifs-utils`；NAS 启用 SMB 并授予照片目录读取权限。
+2. 复制 `.env.example` 为 `.env`，`chmod 600 .env`，填写：
 
    ```env
-   IMMICH_API_KEY='API key'
+   NAS_HOST=你的NAS局域网IP
+   NAS_SHARE=你的照片共享名
+   NAS_USER=你的SMB用户名
+   NAS_PASSWORD='SMB密码'
+   IMMICH_DB_PASSWORD='随机字母数字密码'
+   IMMICH_VERSION=v3.3.4
+   IMMICH_URL=http://immich-server:2283
    ```
 
-   API key 需允许照片读取/搜索、人物读取、相册创建/追加和任务读取/创建。原有完整权限 key 无需修改；人脸识别保持 Immich 默认启用。
+   `NAS_SHARE` 是 `smb://<NAS_IP>/<共享名>` 中的共享名。密码含 `$` 用单引号。
+3. 启动：
 
-更新 Aura 和 worker，使其读取 API key：
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.immich.yml \
+     --profile immich up -d --build
+   ```
+
+4. 打开 `http://<主机IP>:2283` 初始化 Immich。在 **Administration → External Libraries** 创建外部库，选择使用 API key 的同一用户，添加 `/photos`，执行 Scan。
+5. 在该用户下创建上述权限的 API key，写入 `.env` 的 `IMMICH_API_KEY`，再运行：
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.immich.yml \
+     --profile immich up -d aura aura-worker
+   ```
+
+Immich 负责外部库扫描、缩略图、人物和语义索引。新增照片的扫描周期在 Immich 外部库设置中管理。Aura 启动后自动生成事件，默认每天更新；相册规则默认每 5 分钟执行，可通过 `AURA_EVENT_INTERVAL`、`AURA_ALBUM_INTERVAL` 调整（秒）。
+
+## 使用
+
+- **事件**：预览照片、命名并确认。当前按拍摄日期和 6 小时间隔聚合；已确认/拒绝的事件范围不自动改变。
+- **查询**：人物、标签、事件、时间、城市/国家可组合，条件全部满足才入选。可先输入自然语言，再核对解析后的条件。
+- **语义搜索**：画面描述交给 Immich，取最相关的前 100 张，再与事件求交集。需 Immich Smart Search 索引；中文效果取决于其模型。这不是完整的自然语言推理。
+- **相册**：先预览再保存，自动写入独立的 Immich 相册。“与规则一致”会增减成员；“只追加”保留旧成员。移出相册不删除照片；不要手工编辑规则相册的成员。规则名称只用于首次创建远端相册。
+
+人物/标签列表实时来自 Immich；Aura 不再生成本地“年份/横图”等标签。不识别的名称或重名请手工选定；地点名称须与 Immich 一致。日期筛选使用 UTC，结束日期不含当天。
+
+## 从 0.3 升级
+
+先停止旧 Aura（避免旧 worker 继续写入旧数据库），保留 `.env` 和数据目录，将 `IMMICH_VERSION` 固定为 `v3.3.4`：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich up -d --build aura aura-worker
+  --profile immich stop aura aura-worker
+docker compose -f docker-compose.yml -f docker-compose.immich.yml \
+  --profile immich up -d --build --no-deps aura aura-worker
 ```
 
-之后资产映射和智能相册同步自动执行。检查：
+首次启动自动归档 `data/aura.pre-0.4.sqlite` 并迁移：保留事件 ID、审核、相册 ID；照片/人物/标签条件改用 Immich ID。归档仅是 Aura 旧数据库，不是第二份原图。
+
+旧相册继续“只追加”。旧人物名称仅在 Immich 对应人物仍未命名时自动补入，成功后恢复相关规则。名称冲突、本地审核或无法映射的条件写入迁移记录，相关规则暂停；在页面查看旧记录、到 Immich 核对，预览并保存规则后恢复。已有 Immich 名称不会被覆盖。 完整旧资料留在归档，迁移记录见 `/api/v1/migration`。
+
+`AURA_SCAN_INTERVAL`、`PHOTO_ROOT`、`IMMICH_PATH_PREFIX`、`aura-scan` 和旧扫描/人物审核/资产映射 API 已移除；不再使用 `docker-compose.smb.yml`。仅接已有 Immich 时使用基础 compose 文件即可。
+
+## 检查与升级兼容性
+
+当前验证 **Immich 3.3.4**，使用官方镜像。不要配置浮动 `release` 标签。未经验证的版本会暂停自动任务和相册写入；本地事件和规则仍可查看。
 
 ```bash
 curl http://127.0.0.1:18080/api/v1/integrations/immich
+docker compose logs -f aura-worker
+docker compose exec aura aura-check
+# 可选：临时创建一个测试相册，验证添加/移出成员并清理该相册
+docker compose exec aura aura-check --write-test
 ```
 
-外部库必须和 API key 属于同一用户，否则可能得到 `remote_assets: 0`。
+同时部署 Immich 时，上述 compose 命令追加 `-f docker-compose.yml -f docker-compose.immich.yml --profile immich`（放在 `logs/exec` 前）。
 
-## 6. 审核与智能相册
+升级流程：阅读 [Immich 发布说明与升级指南](https://docs.immich.app/install/upgrading/) → 在测试实例验证新版本的接口与写入行为 → 更新 Aura 适配器、测试和版本白名单 → 固定新镜像版本再部署。不是修改环境变量就能绕过兼容检查。实现细节见 [架构说明](docs/architecture.md)。
 
-打开 `http://<sidecar-IP>:18080`：查看任务状态 → 预览事件照片 → 命名并确认 → 选择人物、事件、标签和时间创建相册。多个条件同时满足才会入选。创建前会显示匹配数量和照片预览；0 张时需调整条件。已有相册可点“编辑条件”，保存后继续同步到同一个 Immich 相册（仍只追加照片）。
+- 连接失败或无照片：检查 API key 权限、外部库用户、Immich 任务是否完成。
+- 人物/语义结果为空：在 Immich 检查识别和 Smart Search；队列空不等于模型成功。模型源不可达时可设置 `IMMICH_ML_HF_ENDPOINT=https://hf-mirror.com`，重建机器学习容器。
+- SMB 权限失败：检查共享名、账号、TCP 445；只有 Immich 需要 SMB。
+- 原有实例改地址或 API key 换用户会暂停任务，避免把旧规则写到别的图库。新实例使用独立 `AURA_DATA_DIR`。
 
-人物和标签会分批自动导入（每批最多 100 张，单并发，断点续跑；正常每 6 小时刷新）。首次人脸任务完成后会提前刷新一次。
+运行数据：`data/` 保存 Aura 事件和规则；`immich/` 保存 Immich 数据库及衍生文件。不要删除或放到 SMB 数据库目录。仅面向可信局域网，Aura 当前使用单用户 API key，无独立登录。
 
-人物可命名、确认/拒绝或纠正到另一人物；标签可确认/拒绝。Immich 已命名人物、已有标签和基础规则标签可直接用于筛选，人工决定不会被重同步覆盖。新增相册规则使用稳定 ID，更名不失效。
-
-当前仅追加相册照片；基础标签不包含视觉场景识别。Immich 未提供的模型版本、置信度保留为空；人脸任务失败可在 Aura 任务卡片查看原因。
-
-也可通过 API 创建（`event` 替换为实际事件 ID）：
+## 开发
 
 ```bash
-curl -X POST http://127.0.0.1:18080/api/v1/smart-albums \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"上海活动","query":{"event":1}}'
+pip install -e '.[dev]'
+pytest -q
 ```
 
-首次升级会自动迁移数据库，已有事件和相册保留。
-
-## 7. 检查和排错
-
-```bash
-curl http://127.0.0.1:18080/health
-curl http://127.0.0.1:2283/api/server/ping
-
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich ps
-
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich exec immich-server sh -lc 'find /photos -type f | head'
-```
-
-- `Cannot GET /api/server-info`：当前健康接口是 `/api/server/ping`。
-- `remote_assets: 0`：检查 `/photos` 外部库是否扫描完成，以及 API key 用户是否一致。
-- 人脸队列空闲但没有人物：检查机器学习容器日志。若模型源不可达，可设置 `IMMICH_ML_HF_ENDPOINT=https://hf-mirror.com` 并重建 `immich-machine-learning`；模型缓存保留在 Docker 卷中。
-- SMB 失败：检查 `cifs-utils`、共享名、账号权限和 TCP 445。
-
-## 8. 数据和升级
-
-运行数据位于 `./data`、`./immich/postgres` 和 `./immich/library`；配置在 `.env`。升级时保留这些目录，数据库不要放在 SMB 上。
-
-`IMMICH_VERSION` 初期可用 `release`；稳定后改为已验证的具体版本。
-
-## API
-
-```text
-GET  /health
-GET  /api/v1/tasks
-GET  /api/v1/smart-albums
-PATCH /api/v1/events/{id}
-GET  /api/v1/tag-assignments
-PATCH /api/v1/assets/{asset_id}/tags/{tag_id}
-GET  /api/v1/assets
-GET  /api/v1/search/parse
-GET  /api/v1/person-assignments
-PATCH /api/v1/people/{id}
-PATCH /api/v1/assets/{asset_id}/people/{person_id}
-POST /api/v1/assets/{asset_id}/people/{person_id}/correct
-GET  /api/v1/people
-GET  /api/v1/events
-GET  /api/v1/tags
-POST /api/v1/smart-albums
-GET  /api/v1/integrations/immich
-POST /api/v1/integrations/immich/sync-assets
-POST /api/v1/smart-albums/{id}/materialize
-```
+HTTP API 文档：`http://<主机IP>:18080/docs`。路线见 [ROADMAP](ROADMAP.md)。

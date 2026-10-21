@@ -1,266 +1,141 @@
-from __future__ import annotations
-
-from io import BytesIO
 from pathlib import Path
-from typing import Literal
+from uuid import UUID
+import json
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageOps
-from pydantic import BaseModel, Field, ConfigDict
 
 from . import __version__
-from .config import Settings
-from .config import ImmichConfig
+from .config import ImmichConfig, Settings
 from .db import Database
-from .scanner import PhotoScanner
+from .immich import ImmichClient, ImmichError, ImmichSettings, SUPPORTED_VERSIONS
+from .models import AlbumRequest, QueryRequest, ReviewRequest
 from .service import AuraService
-from .events import build_day_candidates
-from .query import parse_query
-from .immich import ImmichClient, ImmichError, ImmichSettings
 
-settings = Settings.from_env()
+settings, immich_config = Settings.from_env(), ImmichConfig.from_env()
 database = Database(settings.db_path)
-service = AuraService(database)
-immich_config = ImmichConfig.from_env()
-app = FastAPI(title="Aura", version=__version__)
+immich = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key))
+service = AuraService(database, immich)
+app = FastAPI(title='Aura — Immich 高级整理', version=__version__)
 
 
-class ScanRequest(BaseModel):
-    dry_run: bool = False
+@app.get('/health')
+def health():
+    return {'status': 'ok', 'version': __version__}
 
 
-class AlbumQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    q: str | None = None
-    person: str | None = None
-    tag: str | None = None
-    person_id: int | None = Field(default=None, gt=0)
-    tag_id: int | None = Field(default=None, gt=0)
-    event: int | None = Field(default=None, gt=0)
-    start: str | None = None
-    end: str | None = None
+@app.get('/api/v1/config')
+def config():
+    return {'immich_public_url': immich_config.public_url, 'immich_port': immich_config.port,
+            'supported_versions': sorted(SUPPORTED_VERSIONS)}
 
 
-class SmartAlbumRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    query: AlbumQuery
+@app.get('/api/v1/integrations/immich')
+def integration():
+    if not immich.settings.configured:
+        return {'configured': False, 'reachable': False, 'compatible': False}
+    try:
+        version = immich.server_version()
+        return {'configured': True, 'reachable': True, 'compatible': version in SUPPORTED_VERSIONS, 'version': version}
+    except ImmichError as error:
+        return {'configured': True, 'reachable': False, 'compatible': False, 'error': str(error)}
 
 
-class ReviewRequest(BaseModel):
-    state: Literal["pending", "confirmed", "rejected"]
-    name: str | None = Field(default=None, min_length=1, max_length=200)
+@app.get('/api/v1/people')
+def people():
+    return immich.people()
 
 
-class NamedRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+@app.get('/api/v1/tags')
+def tags():
+    return immich.tags()
 
 
-class EventRequest(NamedRequest):
-    level: str = Field(default="day", pattern="^(day|theme)$")
-    confirmed: bool = False
-
-
-class ExternalAssetRequest(BaseModel):
-    provider: str = Field(default="immich", pattern="^[a-z0-9_-]+$")
-    external_id: str = Field(min_length=1, max_length=200)
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "version": __version__}
-
-
-@app.post("/api/v1/scans")
-def scan(request: ScanRequest = ScanRequest()) -> dict[str, int]:
-    return PhotoScanner(settings.photo_root, database).scan(dry_run=request.dry_run)
-
-
-@app.get("/api/v1/assets")
-def assets(q: str | None = None, start: str | None = None, end: str | None = None,
-           person: str | None = None, tag: str | None = None, event: int | None = None, person_id: int | None = None, tag_id: int | None = None) -> list[dict]:
-    return service.search_assets(q, start, end, person, tag, event, person_id, tag_id)
-
-
-@app.get("/api/v1/people")
-def people() -> list[dict]:
-    return service.list_people()
-
-
-@app.post("/api/v1/people", status_code=201)
-def create_person(request: NamedRequest) -> dict:
-    return service.create_person(request.name)
-
-
-@app.get("/api/v1/tags")
-def tags() -> list[dict]:
-    return service.list_tags()
-
-
-@app.post("/api/v1/tags", status_code=201)
-def create_tag(request: NamedRequest) -> dict:
-    return service.create_tag(request.name)
-
-
-@app.get("/api/v1/events")
-def events() -> list[dict]:
+@app.get('/api/v1/events')
+def events():
     return service.list_events()
 
 
-@app.post("/api/v1/events/candidates")
-def event_candidates() -> dict[str, int]:
-    return {"created": build_day_candidates(database)}
-
-
-@app.get("/api/v1/search/parse")
-def parse_search(text: str) -> dict:
-    return parse_query(text, [row["name"] for row in service.list_people()], [row["name"] for row in service.list_tags()])
-
-
-@app.post("/api/v1/events", status_code=201)
-def create_event(request: EventRequest) -> dict:
-    return service.create_event(request.name, request.level, request.confirmed)
-
-
-@app.post("/api/v1/smart-albums", status_code=201)
-def smart_album(request: SmartAlbumRequest) -> dict:
-    return service.create_smart_album(request.name, request.query.model_dump(exclude_none=True))
-
-
-@app.get("/api/v1/integrations/immich")
-def immich_status() -> dict:
-    if not immich_config.url or not immich_config.api_key:
-        return {"configured": False, "reachable": False}
-    try:
-        info = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key)).server_info()
-        return {"configured": True, "reachable": True, "server": info}
-    except ImmichError as error:
-        return {"configured": True, "reachable": False, "error": str(error)}
-
-
-@app.post("/api/v1/integrations/immich/sync-assets")
-def sync_immich_assets() -> dict[str, int]:
-    if not immich_config.url or not immich_config.api_key:
-        raise ValueError("IMMICH_URL and IMMICH_API_KEY must be configured")
-    client = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key))
-    return service.sync_immich_asset_mappings(client, immich_config.path_prefix, str(settings.photo_root.resolve()))
-
-
-@app.post("/api/v1/assets/{asset_id}/external", status_code=201)
-def map_external_asset(asset_id: int, request: ExternalAssetRequest) -> dict:
-    return service.map_external_asset(asset_id, request.provider, request.external_id)
-
-
-@app.post("/api/v1/smart-albums/{smart_album_id}/materialize")
-def materialize_smart_album(smart_album_id: int) -> dict:
-    if not immich_config.url or not immich_config.api_key:
-        raise ValueError("IMMICH_URL and IMMICH_API_KEY must be configured")
-    return service.materialize_smart_album(smart_album_id, ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key)))
-
-
-@app.exception_handler(LookupError)
-def missing_record(request, error):
-    return JSONResponse(status_code=404, content={"detail": str(error)})
-
-
-@app.exception_handler(ValueError)
-def invalid_value(request, error):
-    return JSONResponse(status_code=400, content={"detail": str(error)})
-
-
-@app.exception_handler(ImmichError)
-def remote_failure(request, error):
-    return JSONResponse(status_code=502, content={"detail": str(error)})
-
-
-@app.get("/api/v1/tasks")
-def task_status() -> dict:
-    return service.task_status()
-
-
-@app.get("/api/v1/smart-albums")
-def smart_albums() -> list[dict]:
-    return service.list_smart_albums()
-
-
-@app.patch("/api/v1/events/{event_id}")
-def review_event(event_id: int, request: ReviewRequest) -> dict:
+@app.patch('/api/v1/events/{event_id}')
+def review_event(event_id: int, request: ReviewRequest):
     return service.review_event(event_id, request.state, request.name)
 
 
-@app.get("/api/v1/tag-assignments")
-def tag_assignments(state: Literal["pending", "confirmed", "rejected"] | None = None, offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)) -> list[dict]:
-    return service.list_tag_assignments(state, offset, limit)
+@app.get('/api/v1/events/{event_id}/assets')
+def event_assets(event_id: int, offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)):
+    rows = service.search_assets({'event': event_id})
+    return {'total': len(rows), 'assets': [{'id': r['id']} for r in rows[offset:offset + limit]]}
 
 
-@app.patch("/api/v1/assets/{asset_id}/tags/{tag_id}")
-def review_tag(asset_id: int, tag_id: int, request: ReviewRequest) -> dict:
-    return service.review_tag(asset_id, tag_id, request.state)
+@app.post('/api/v1/smart-albums/preview')
+def preview(request: QueryRequest):
+    return service.preview_album(request.query.compact())
 
 
-@app.get("/api/v1/assets/{asset_id}/thumbnail")
-def thumbnail(asset_id: int):
-    rows = database.fetch_all("SELECT path FROM assets WHERE id=? AND missing_at IS NULL", [asset_id])
-    if not rows:
-        raise HTTPException(404, "photo not found")
-    path = Path(rows[0]["path"]).resolve()
-    if not path.is_relative_to(settings.photo_root.resolve()):
-        raise HTTPException(403, "photo outside configured library")
-    try:
-        with Image.open(path) as source:
-            source.draft("RGB", (480, 480))
-            source.thumbnail((480, 480))
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            output = BytesIO()
-            image.save(output, format="JPEG", quality=75)
-        return Response(output.getvalue(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
-    except (OSError, ValueError, Image.DecompressionBombError):
-        raise HTTPException(404, "preview unavailable")
+@app.get('/api/v1/smart-albums')
+def albums():
+    return service.list_smart_albums()
 
 
-static_root = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=static_root), name="static")
+@app.post('/api/v1/smart-albums', status_code=201)
+def create_album(request: AlbumRequest):
+    return service.save_album(request.name, request.query.compact(), request.sync_mode)
 
 
-@app.get("/", include_in_schema=False)
+@app.patch('/api/v1/smart-albums/{album_id}')
+def update_album(album_id: int, request: AlbumRequest):
+    return service.save_album(request.name, request.query.compact(), request.sync_mode, album_id)
+
+
+@app.post('/api/v1/smart-albums/{album_id}/materialize')
+def materialize(album_id: int):
+    return service.materialize(album_id)
+
+
+@app.get('/api/v1/search/parse')
+def parse(text: str = Query(min_length=1, max_length=500)):
+    return service.parse_search(text)
+
+
+@app.get('/api/v1/assets/{asset_id}/thumbnail')
+def thumbnail(asset_id: UUID):
+    content, content_type = immich.thumbnail(str(asset_id))
+    return Response(content, media_type=content_type, headers={'Cache-Control': 'private, max-age=300'})
+
+
+@app.get('/api/v1/tasks')
+def tasks():
+    rows = database.fetch_all('SELECT * FROM task_status ORDER BY name')
+    for row in rows:
+        row['result'] = json.loads(row.pop('result_json') or 'null')
+    return {'tasks': rows}
+
+
+@app.get('/api/v1/migration')
+def migration():
+    return json.loads(database.get_setting('migration_report', 'null'))
+
+
+@app.exception_handler(LookupError)
+def missing(request, error):
+    return JSONResponse(status_code=404, content={'detail': str(error)})
+
+
+@app.exception_handler(ValueError)
+def invalid(request, error):
+    return JSONResponse(status_code=400, content={'detail': str(error)})
+
+
+@app.exception_handler(ImmichError)
+def upstream(request, error):
+    return JSONResponse(status_code=502, content={'detail': str(error)})
+
+
+static_root = Path(__file__).parent / 'static'
+app.mount('/static', StaticFiles(directory=static_root), name='static')
+
+
+@app.get('/', include_in_schema=False)
 def index():
-    return FileResponse(static_root / "index.html")
-
-
-class PersonCorrectionRequest(BaseModel):
-    person_id: int = Field(gt=0)
-
-
-@app.patch("/api/v1/people/{person_id}")
-def rename_person(person_id: int, request: NamedRequest) -> dict:
-    return service.rename_person(person_id, request.name)
-
-
-@app.get("/api/v1/person-assignments")
-def person_assignments(state: Literal["pending", "confirmed", "rejected"] | None = None, offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200), person_id: int | None = None) -> list[dict]:
-    return service.list_person_assignments(state, offset, limit, person_id)
-
-
-@app.patch("/api/v1/assets/{asset_id}/people/{person_id}")
-def review_person(asset_id: int, person_id: int, request: ReviewRequest) -> dict:
-    return service.review_person(asset_id, person_id, request.state)
-
-
-@app.post("/api/v1/assets/{asset_id}/people/{person_id}/correct")
-def correct_person(asset_id: int, person_id: int, request: PersonCorrectionRequest) -> dict:
-    return service.correct_person(asset_id, person_id, request.person_id)
-
-
-class SmartAlbumQueryRequest(BaseModel):
-    query: AlbumQuery
-
-
-@app.post("/api/v1/smart-albums/preview")
-def preview_smart_album(request: SmartAlbumQueryRequest) -> dict:
-    return service.preview_album(request.query.model_dump(exclude_none=True))
-
-
-@app.patch("/api/v1/smart-albums/{album_id}")
-def update_smart_album_query(album_id: int, request: SmartAlbumQueryRequest) -> dict:
-    return service.update_smart_album_query(album_id, request.query.model_dump(exclude_none=True))
+    return FileResponse(static_root / 'index.html')

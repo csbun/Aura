@@ -3,112 +3,148 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Aura · 照片管理</title>
+    <title>Aura · 高级整理</title>
     <link rel="stylesheet" href="/static/app.css" />
     <script defer src="/static/app.js"></script>
   </head>
   <body>
     <header>
-      <strong>Aura</strong><span>照片留在 NAS，回忆聚在一起</span>
+      <div><strong>Aura</strong><span>Immich 高级整理</span></div>
+      <nav>
+        <a id="immich-link" target="_blank" rel="noopener">打开 Immich ↗</a
+        ><button id="refresh" type="button">刷新</button>
+      </nav>
     </header>
     <main>
-      <div id="notice" role="status" aria-live="polite"></div>
-      <section>
-        <h1>照片与任务</h1>
-        <p id="status">正在读取状态…</p>
-        <div id="tasks" class="cards"></div>
-        <p class="hint">
-          扫描自动执行；相册约每分钟同步一次。首次扫描期间请等待。
-        </p>
+      <p class="intro">
+        照片浏览、人物命名和标签管理请在 Immich
+        完成。这里整理事件，创建动态相册。
+      </p>
+      <div id="error" role="alert" hidden></div>
+      <section class="status">
+        <h2>连接与任务</h2>
+        <p id="connection">正在连接…</p>
+        <div id="tasks"></div>
       </section>
-      <section>
-        <div class="heading">
-          <h2>事件审核</h2>
-          <select id="event-state" aria-label="审核状态">
-            <option value="pending">待审核</option>
-            <option value="confirmed">已确认</option>
-            <option value="rejected">已拒绝</option>
-            <option value="superseded">已被重新分组</option>
-          </select>
-        </div>
-        <div id="events" class="cards"></div>
-        <button id="more-events" hidden>查看更多事件</button>
-      </section>
-      <section id="preview-section" hidden>
-        <h2 id="preview-title">事件照片</h2>
-        <div id="photos" class="photos"></div>
-        <button id="more-photos" hidden>查看更多照片</button>
-      </section>
-      <section id="catalog">
-        <h2>人物与标签</h2>
-        <p class="hint">
-          自动导入 Immich
-          人物和标签。可在这里命名人物、纠正识别；已保存的决定不会被同步覆盖。
-        </p>
-        <div id="people" class="cards"></div>
-        <button id="more-people" hidden>更多人物</button>
-        <h3>人物照片审核</h3>
-        <div class="actions">
-          <select id="person-review-state" aria-label="人物审核状态">
-            <option value="pending">待审核</option>
-            <option value="confirmed">已确认</option>
-            <option value="rejected">已拒绝</option></select
-          ><select id="review-person-filter" aria-label="筛选人物">
-            <option value="">不限</option>
-          </select>
-        </div>
-        <div id="person-assignments" class="cards"></div>
-        <div class="actions">
-          <button id="previous-people">上一页</button
-          ><button id="next-people">下一页</button>
-        </div>
-        <h3>照片标签审核</h3>
-        <p class="hint">
-          系统自动生成年份、画幅和定位状态标签，可直接用于相册；有误时可拒绝。
-        </p>
-        <p id="tags"></p>
-        <select id="tag-review-state" aria-label="标签审核状态">
-          <option value="pending">待审核</option>
-          <option value="confirmed">已确认</option>
-          <option value="rejected">已拒绝</option>
-        </select>
-        <div id="assignments" class="cards"></div>
-        <div class="actions">
-          <button id="previous-tags">上一页</button
-          ><button id="next-tags">下一页</button>
-        </div>
-      </section>
-      <section>
-        <h2 id="album-form-title">创建智能相册</h2>
-        <p class="hint">
-          所有条件同时满足才会入选；当前版本自动追加照片。结束日期不包含当天。
-        </p>
-        <form id="album-form">
-          <label>相册名称<input name="name" required maxlength="200" /></label
-          ><label
-            >人物<select name="person_id" id="person-filter">
-              <option value="">不限</option>
+      <details id="migration" hidden>
+        <summary>旧版资料迁移说明</summary>
+        <div id="migration-info"></div>
+        <a href="/api/v1/migration" target="_blank" rel="noopener"
+          >查看完整迁移记录</a
+        >
+      </details>
+      <div class="columns">
+        <section>
+          <h2>事件整理</h2>
+          <p class="muted">
+            按拍摄日期和 6 小时间隔生成候选，确认后的照片范围保持固定。
+          </p>
+          <label
+            >状态
+            <select id="event-filter">
+              <option value="pending">待确认</option>
+              <option value="confirmed">已确认</option>
+              <option value="rejected">已拒绝</option>
             </select></label
-          ><label
-            >事件<select name="event" id="event-filter">
-              <option value="">不限</option>
-            </select></label
-          ><label
-            >标签<select name="tag_id" id="tag-filter">
-              <option value="">不限</option>
-            </select></label
-          ><label>开始日期<input name="start" type="date" /></label
-          ><label>结束日期<input name="end" type="date" /></label
-          ><label>文件路径包含<input name="q" /></label
-          ><button id="save-album" type="submit">创建，自动同步</button
-          ><button id="cancel-album-edit" type="button" hidden>取消编辑</button>
-        </form>
-        <p id="album-match-summary" role="status" aria-live="polite">
-          正在计算匹配照片…
+          >
+          <div id="events"></div>
+          <button id="events-more" type="button">显示更多</button>
+        </section>
+        <section>
+          <h2 id="form-title">创建相册规则</h2>
+          <form id="parse-form">
+            <label
+              >自然语言<input
+                id="natural-text"
+                placeholder="例如：2025年小明的海边照片"
+                maxlength="500"
+                required /></label
+            ><button type="submit">解析为条件</button>
+            <p id="parse-note" class="muted"></p>
+          </form>
+          <form id="album-form">
+            <label
+              >规则名称<input id="album-name" required maxlength="200"
+            /></label>
+            <div class="pair">
+              <label
+                >人物（可多选）<select
+                  id="person-ids"
+                  multiple
+                  size="4"
+                ></select></label
+              ><label
+                >标签（可多选）<select id="tag-ids" multiple size="4"></select
+              ></label>
+            </div>
+            <p class="muted">
+              按 Ctrl / ⌘ 多选；所有条件同时满足。人物和标签来自 Immich。
+            </p>
+            <label
+              >事件<select id="album-event">
+                <option value="">不限</option>
+              </select></label
+            >
+            <div class="pair">
+              <label>开始日期（含，UTC）<input id="start" type="date" /></label
+              ><label
+                >结束日期（不含，UTC）<input id="end" type="date"
+              /></label>
+            </div>
+            <div class="pair">
+              <label
+                >城市<input
+                  id="city"
+                  placeholder="与 Immich 地点名称一致" /></label
+              ><label>国家<input id="country" /></label>
+            </div>
+            <label
+              >画面描述<input
+                id="semantic"
+                maxlength="500"
+                placeholder="交给 Immich 语义搜索，如：海边日落"
+            /></label>
+            <p class="muted">
+              语义搜索取最相关的前 100 张，再与事件求交集；中文效果取决于 Immich
+              模型。
+            </p>
+            <label>文件名包含<input id="filename" maxlength="500" /></label>
+            <label
+              >相册更新方式<select id="sync-mode">
+                <option value="mirror">与规则一致：自动添加和移出照片</option>
+                <option value="append">只追加照片</option>
+              </select></label
+            >
+            <p class="muted">
+              “移出”只改变相册成员，不删除照片。规则相册由 Aura 管理，请勿在
+              Immich 中手动调整其成员。
+            </p>
+            <div class="actions">
+              <button id="preview-button" type="button">预览匹配</button
+              ><button id="save" type="submit" disabled>保存规则</button
+              ><button id="cancel" type="button" hidden>取消编辑</button>
+            </div>
+            <p id="preview-summary" aria-live="polite">请先预览匹配结果。</p>
+            <div id="preview" class="photos"></div>
+          </form>
+        </section>
+      </div>
+      <section>
+        <h2>相册规则</h2>
+        <p class="muted">
+          保存后约 5 分钟内自动更新；在 Immich 中浏览生成的相册。
         </p>
-        <div id="album-preview-photos" class="photos"></div>
-        <div id="albums" class="cards"></div>
+        <div id="albums"></div>
       </section>
+      <dialog id="event-dialog">
+        <div class="actions">
+          <h2 id="event-title"></h2>
+          <button id="close-event" type="button">关闭</button>
+        </div>
+        <p id="event-preview-status"></p>
+        <div id="event-preview" class="photos"></div>
+        <button id="event-more" type="button">下一页</button>
+      </dialog>
     </main>
   </body>
 </html>

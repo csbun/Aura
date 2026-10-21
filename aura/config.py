@@ -7,26 +7,25 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
-    photo_root: Path
     db_path: Path
+    event_interval: int = 86400
+    album_interval: int = 300
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        photo_root = Path(os.getenv("PHOTO_ROOT", "./sample-photos")).expanduser()
-        db_path = Path(os.getenv("AURA_DB_PATH", "./data/aura.db")).expanduser()
-        return cls(photo_root=photo_root, db_path=db_path)
+    def from_env(cls) -> 'Settings':
+        return cls(Path(os.getenv('AURA_DB_PATH', './data/aura.db')).expanduser(),
+                   max(60, int(os.getenv('AURA_EVENT_INTERVAL', '86400'))),
+                   max(30, int(os.getenv('AURA_ALBUM_INTERVAL', '300'))))
 
 
 @dataclass(frozen=True)
 class ImmichConfig:
     url: str
     api_key: str
-    path_prefix: str
+    public_url: str = ''
+    port: int = 2283
 
     @classmethod
-    def from_env(cls) -> "ImmichConfig":
-        return cls(
-            url=os.getenv("IMMICH_URL", "").rstrip("/"),
-            api_key=os.getenv("IMMICH_API_KEY", ""),
-            path_prefix=os.getenv("IMMICH_PATH_PREFIX", "/photos").rstrip("/") or "/",
-        )
+    def from_env(cls) -> 'ImmichConfig':
+        return cls(os.getenv('IMMICH_URL', '').rstrip('/'), os.getenv('IMMICH_API_KEY', ''),
+                   os.getenv('IMMICH_PUBLIC_URL', '').rstrip('/'), int(os.getenv('IMMICH_PORT', '2283')))

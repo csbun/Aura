@@ -4,22 +4,10 @@
 # The service layout follows the official Immich Docker Compose release. Keep
 # IMMICH_VERSION pinned after the first successful installation.
 services:
-  aura:
-    volumes:
-      - nas_photos:/photos:ro
-
-  aura-scan:
-    volumes:
-      - nas_photos:/photos:ro
-
-  aura-worker:
-    volumes:
-      - nas_photos:/photos:ro
-
   immich-server:
     profiles: ["immich"]
     container_name: immich_server
-    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3.3.4}
     volumes:
       - ${IMMICH_UPLOAD_LOCATION:-./immich/library}:/data
       - nas_photos:/photos:ro
@@ -41,7 +29,7 @@ services:
   immich-machine-learning:
     profiles: ["immich"]
     container_name: immich_machine_learning
-    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-v3.3.4}
     volumes:
       - immich_model_cache:/cache
     environment:

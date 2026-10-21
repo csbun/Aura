@@ -1,98 +1,29 @@
 from __future__ import annotations
 
+import fcntl
+import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable
+from uuid import uuid4
 
-
-SCHEMA = """
-PRAGMA foreign_keys = ON;
-CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS assets (
-  id INTEGER PRIMARY KEY,
-  path TEXT NOT NULL UNIQUE,
-  sha256 TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  mtime_ns INTEGER NOT NULL,
-  captured_at TEXT,
-  latitude REAL,
-  longitude REAL,
-  width INTEGER,
-  height INTEGER,
-  media_type TEXT NOT NULL DEFAULT 'image',
-  indexed_at TEXT NOT NULL,
-  missing_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_assets_captured_at ON assets(captured_at);
-CREATE INDEX IF NOT EXISTS idx_assets_sha256 ON assets(sha256);
-CREATE TABLE IF NOT EXISTS people (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  confirmed INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS asset_people (
-  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
-  confidence REAL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  PRIMARY KEY(asset_id, person_id)
-);
-CREATE TABLE IF NOT EXISTS tags (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  kind TEXT NOT NULL DEFAULT 'user',
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS asset_tags (
-  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  confidence REAL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  PRIMARY KEY(asset_id, tag_id)
-);
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  starts_at TEXT,
-  ends_at TEXT,
-  latitude REAL,
-  longitude REAL,
-  level TEXT NOT NULL DEFAULT 'day',
-  confirmed INTEGER NOT NULL DEFAULT 0,
-  source TEXT NOT NULL DEFAULT 'candidate',
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS event_assets (
-  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  confidence REAL,
-  PRIMARY KEY(event_id, asset_id)
-);
-CREATE TABLE IF NOT EXISTS smart_albums (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  query_json TEXT NOT NULL,
-  materialized_at TEXT,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS external_assets (
-  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  provider TEXT NOT NULL,
-  external_id TEXT NOT NULL,
-  synced_at TEXT NOT NULL,
-  PRIMARY KEY(asset_id, provider),
-  UNIQUE(provider, external_id)
-);
-CREATE TABLE IF NOT EXISTS external_albums (
-  smart_album_id INTEGER NOT NULL REFERENCES smart_albums(id) ON DELETE CASCADE,
-  provider TEXT NOT NULL,
-  external_id TEXT NOT NULL,
-  synced_at TEXT NOT NULL,
-  PRIMARY KEY(smart_album_id, provider),
-  UNIQUE(provider, external_id)
-);
-"""
+SCHEMA_VERSION = 5
+SCHEMA = [
+    'CREATE TABLE schema_version (version INTEGER NOT NULL)',
+    "CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    """CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+       starts_at TEXT, ends_at TEXT, review_state TEXT NOT NULL DEFAULT 'pending',
+       source TEXT NOT NULL DEFAULT 'candidate', issue TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE event_assets (event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+       asset_id TEXT NOT NULL, PRIMARY KEY(event_id, asset_id))""",
+    'CREATE INDEX event_assets_asset ON event_assets(asset_id)',
+    """CREATE TABLE smart_albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+       query_json TEXT NOT NULL, remote_id TEXT UNIQUE, sync_mode TEXT NOT NULL DEFAULT 'mirror',
+       migration_issue TEXT, materialized_at TEXT, matched_assets INTEGER, error TEXT,
+       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE task_status (name TEXT PRIMARY KEY, state TEXT NOT NULL, started_at TEXT,
+       finished_at TEXT, result_json TEXT, error TEXT)""",
+]
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -104,61 +35,78 @@ class ClosingConnection(sqlite3.Connection):
 
 
 class Database:
-    """Deep storage module: owns schema creation and transaction boundaries."""
-
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    def connect(self) -> sqlite3.Connection:
+    def connect(self):
         connection = sqlite3.connect(self.path, timeout=30, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute('PRAGMA foreign_keys=ON')
         return connection
 
-    def initialize(self) -> None:
-        with self.connect() as connection:
-            connection.executescript(SCHEMA)
-            connection.execute("BEGIN IMMEDIATE")
-            for table in ("events", "asset_tags", "asset_people"):
-                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
-                if "review_state" not in columns:
-                    connection.execute(f"ALTER TABLE {table} ADD COLUMN review_state TEXT NOT NULL DEFAULT 'pending'")
-                    if table == "events":
-                        connection.execute("UPDATE events SET review_state = 'confirmed' WHERE confirmed = 1")
-                    else:
-                        connection.execute(f"UPDATE {table} SET review_state = 'confirmed' WHERE source = 'manual'")
-            connection.execute("CREATE TABLE IF NOT EXISTS task_status (name TEXT PRIMARY KEY, state TEXT NOT NULL, started_at TEXT, finished_at TEXT, result_json TEXT, error TEXT)")
-            for table in ("asset_people", "asset_tags"):
-                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
-                for name, definition in {
-                    "reviewed": "INTEGER NOT NULL DEFAULT 0",
-                    "active": "INTEGER NOT NULL DEFAULT 1",
-                    "model_name": "TEXT", "model_version": "TEXT",
-                    "producer_version": "TEXT", "observed_at": "TEXT",
-                }.items():
-                    if name not in columns:
-                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-                        if name == "reviewed":
-                            connection.execute(f"UPDATE {table} SET reviewed=1 WHERE source='manual' OR review_state IN ('confirmed','rejected')")
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(people)")}
-            if "name_locked" not in columns:
-                connection.execute("ALTER TABLE people ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0")
-                connection.execute("UPDATE people SET name_locked=1")
-            connection.execute("CREATE TABLE IF NOT EXISTS external_people (external_id TEXT PRIMARY KEY, person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE)")
-            connection.execute("CREATE TABLE IF NOT EXISTS external_tags (external_id TEXT PRIMARY KEY, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE)")
-            connection.execute("CREATE TABLE IF NOT EXISTS enrichment_state (asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE, external_id TEXT NOT NULL, next_attempt_at TEXT NOT NULL, synced_at TEXT, error TEXT)")
-            connection.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_due ON enrichment_state(next_attempt_at)")
-            connection.execute("CREATE TABLE IF NOT EXISTS integration_state (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            connection.execute("DELETE FROM schema_version")
-            connection.execute("INSERT INTO schema_version(version) VALUES (4)")
+    @contextmanager
+    def lock(self, name):
+        with self.path.with_suffix(f'.{name}.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
 
-    def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
-        with self.connect() as connection:
-            cursor = connection.execute(sql, tuple(params))
-            connection.commit()
-            return cursor
+    def initialize(self):
+        with self.lock('schema'), self.connect() as c:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            version = c.execute('SELECT version FROM schema_version').fetchone() if 'schema_version' in tables else None
+            if version and version[0] > SCHEMA_VERSION:
+                raise RuntimeError('Aura database is newer than this application; downgrade refused')
+            if version and version[0] == SCHEMA_VERSION:
+                return
+            if tables:
+                legacy_tables = {'schema_version', 'assets', 'people', 'asset_people', 'tags', 'asset_tags',
+                                 'events', 'event_assets', 'smart_albums', 'external_assets', 'external_albums',
+                                 'task_status', 'external_people', 'external_tags', 'enrichment_state', 'integration_state'}
+                if tables - legacy_tables - {'sqlite_sequence'}:
+                    raise RuntimeError('Unknown tables in legacy database; migration refused')
+                if not version or version[0] not in (1, 2, 3, 4):
+                    raise RuntimeError('Unrecognized Aura database; migration refused')
+                # sqlite backup provides a consistent, complete archive, not a second photo copy.
+                archive = self.path.with_suffix('.pre-0.4.sqlite')
+                if not archive.exists():
+                    partial = archive.with_suffix('.tmp')
+                    with sqlite3.connect(partial) as backup:
+                        c.backup(backup)
+                    partial.chmod(0o600)
+                    partial.replace(archive)
+                from .migration import read_legacy
+                events, memberships, albums, report = read_legacy(c, archive.name)
+            else:
+                events, memberships, albums, report = [], [], [], None
+            c.execute('PRAGMA foreign_keys=OFF')
+            c.execute('BEGIN IMMEDIATE')
+            for name in tables - {'sqlite_sequence'}:
+                c.execute('DROP TABLE "' + name.replace('"', '""') + '"')
+            for statement in SCHEMA:
+                c.execute(statement)
+            c.execute('INSERT INTO schema_version VALUES (?)', [SCHEMA_VERSION])
+            c.execute('INSERT INTO settings VALUES (?,?)', ['instance_id', str(uuid4())])
+            for row in events:
+                c.execute('INSERT INTO events(id,name,starts_at,ends_at,review_state,source,issue,created_at) VALUES (?,?,?,?,?,?,?,?)', row)
+            c.executemany('INSERT INTO event_assets VALUES (?,?)', memberships)
+            for row in albums:
+                c.execute('INSERT INTO smart_albums(id,name,query_json,remote_id,sync_mode,migration_issue,created_at) VALUES (?,?,?,?,?,?,?)', row)
+            if report:
+                c.execute('INSERT INTO settings VALUES (?,?)', ['migration_report', json.dumps(report, ensure_ascii=False)])
+            c.commit()
 
-    def fetch_all(self, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            return [dict(row) for row in connection.execute(sql, tuple(params)).fetchall()]
+    def execute(self, sql, params=()):
+        with self.connect() as c:
+            return c.execute(sql, tuple(params))
+
+    def fetch_all(self, sql, params=()):
+        with self.connect() as c:
+            return [dict(r) for r in c.execute(sql, tuple(params))]
+
+    def get_setting(self, name, default=None):
+        rows = self.fetch_all('SELECT value FROM settings WHERE name=?', [name])
+        return rows[0]['value'] if rows else default
+
+    def set_setting(self, name, value):
+        self.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value', [name, value])
