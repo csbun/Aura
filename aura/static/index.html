@@ -37,8 +37,8 @@
         <section>
           <h2>事件整理</h2>
           <p class="muted">
-            按拍摄日期和 6
-            小时间隔自动整理，默认通过，可直接用于相册。需要时合并或删除事件。
+            按拍摄日期和 6 小时间隔自动整理，默认通过，可直接用于相册。事件以
+            Immich 标签保存，可在两侧查看和调整。需要时合并或删除事件。
           </p>
           <label
             >查找事件<input
@@ -54,7 +54,7 @@
             >合并后的名称（可选）<input
               id="merge-name"
               maxlength="200"
-              placeholder="留空沿用最早创建事件的名称"
+              placeholder="留空沿用第一个所选事件的名称"
           /></label>
           <button id="merge-events" type="button" disabled>合并所选事件</button>
           <p id="events-status" class="muted" aria-live="polite"></p>

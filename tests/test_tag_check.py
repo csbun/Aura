@@ -28,8 +28,8 @@ class TagProbe:
         self.catalog.append({'id': TAG, 'name': name, 'value': name})
         return self.catalog[0]
 
-    def change_tag_assets(self, tag_id, ids):
-        self.asset['tags'] = deepcopy(self.catalog)
+    def change_tag_assets(self, tag_id, ids, *, remove=False):
+        self.asset['tags'] = [] if remove else deepcopy(self.catalog)
 
     def refresh_asset_metadata(self, asset_id):
         self.calls.append('refresh')

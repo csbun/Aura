@@ -82,7 +82,7 @@ function formQuery() {
     const values = selected(id);
     if (values.length) query[field] = values;
   }
-  if ($("album-event").value) query.event = Number($("album-event").value);
+  if ($("album-event").value) query.event = $("album-event").value;
   for (const key of ["start", "end"])
     if ($(key).value) query[key] = $(key).value + "T00:00:00Z";
   for (const [key, id] of [
@@ -102,6 +102,14 @@ function invalidate() {
   $("preview").replaceChildren();
 }
 function setQuery(query) {
+  query = { ...query, tag_ids: [...(query.tag_ids || [])] };
+  const eventId =
+    query.event ||
+    query.tag_ids.find((id) => catalog.events.some((e) => e.id === id));
+  if (eventId) {
+    query.event = eventId;
+    query.tag_ids = query.tag_ids.filter((id) => id !== eventId);
+  }
   for (const [key, id] of [
     ["person_ids", "person-ids"],
     ["tag_ids", "tag-ids"],
@@ -165,7 +173,11 @@ async function loadCatalog() {
     catalog.people,
     (p) => p.name || "未命名人物 " + p.id.slice(0, 8),
   );
-  fillOptions("tag-ids", catalog.tags, (t) => t.value || t.name);
+  fillOptions(
+    "tag-ids",
+    catalog.tags.filter((t) => !catalog.events.some((e) => e.id === t.id)),
+    (t) => t.value || t.name,
+  );
   fillOptions(
     "album-event",
     [
@@ -245,7 +257,7 @@ function renderEvents() {
       button("删除事件", async () => {
         if (
           !window.confirm(
-            `删除事件“${event.name}”？照片和 Immich 相册会保留，相关规则暂停；原成员不会再次生成事件。`,
+            `删除事件“${event.name}”？对应的 Immich 事件标签将删除；照片和相册保留，相关规则暂停，原成员不会再次生成事件。`,
           )
         )
           return;
@@ -382,13 +394,49 @@ async function loadStatus() {
   tasks.tasks.forEach((task) => {
     const row = el(
       "p",
-      `${task.name === "events" ? "事件生成" : task.name === "migration" ? "旧版命名迁移" : "相册更新"}：${{ complete: "完成", failed: "失败", running: "进行中", interrupted: "等待重试" }[task.state] || task.state}`,
+      `${task.name === "events" ? "事件生成" : task.name === "event_tags" ? "事件标签任务" : task.name === "migration" ? "旧版命名迁移" : "相册更新"}：${{ complete: "完成", failed: "失败", running: "进行中", interrupted: "等待重试" }[task.state] || task.state}`,
     );
     if (task.error) row.append(el("span", " · " + task.error, "warning"));
     if (task.result?.paused)
       row.append(el("span", ` · ${task.result.paused} 个规则待处理`));
     $("tasks").append(row);
   });
+  if (!tasks.event_tags_enabled)
+    $("tasks").append(
+      el(
+        "p",
+        "事件标签写入尚未启用，请先验证图库支持 XMP 持久化（见安装说明）。",
+        "warning",
+      ),
+    );
+  if (tasks.event_migration && !tasks.event_migration.complete) {
+    $("tasks").append(
+      el(
+        "p",
+        `事件标签迁移：${tasks.event_migration.migrated} / ${tasks.event_migration.total}`,
+      ),
+    );
+  }
+  for (const operation of tasks.event_operations || []) {
+    if (!operation.error) continue;
+    const row = el("div", undefined, "warning");
+    row.append(el("p", operation.error));
+    if (!operation.id.startsWith("legacy-"))
+      row.append(
+        button("取消任务，保留已完成修改", async () => {
+          if (
+            !window.confirm(
+              "取消此任务？已经写入 Immich 的修改会保留，后续可重新整理。",
+            )
+          )
+            return;
+          await api("/event-operations/" + operation.id, { method: "DELETE" });
+          await loadCatalog();
+          await loadStatus();
+        }),
+      );
+    $("tasks").append(row);
+  }
 }
 async function preview() {
   const serial = ++previewVersion,

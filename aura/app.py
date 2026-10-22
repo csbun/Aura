@@ -15,7 +15,7 @@ from .service import AuraService
 
 settings, immich_config = Settings.from_env(), ImmichConfig.from_env()
 database = Database(settings.db_path)
-immich = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key))
+immich = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key, immich_config.job_api_key))
 service = AuraService(database, immich)
 app = FastAPI(title='Aura — Immich 高级整理', version=__version__)
 
@@ -63,17 +63,17 @@ def merge_events(request: MergeEventsRequest):
 
 
 @app.delete('/api/v1/events/{event_id}')
-def delete_event(event_id: int):
+def delete_event(event_id: UUID):
     return service.delete_event(event_id)
 
 
 @app.patch('/api/v1/events/{event_id}')
-def review_event(event_id: int, request: ReviewRequest):
+def review_event(event_id: UUID, request: ReviewRequest):
     return service.review_event(event_id, request.state, request.name)
 
 
 @app.get('/api/v1/events/{event_id}/assets')
-def event_assets(event_id: int, offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)):
+def event_assets(event_id: UUID, offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)):
     rows = service.search_assets({'event': event_id})
     return {'total': len(rows), 'assets': [{'id': r['id']} for r in rows[offset:offset + limit]]}
 
@@ -125,7 +125,14 @@ def tasks():
     rows = database.fetch_all('SELECT * FROM task_status ORDER BY name')
     for row in rows:
         row['result'] = json.loads(row.pop('result_json') or 'null')
-    return {'tasks': rows}
+    operations = database.fetch_all('SELECT id,error FROM event_operations ORDER BY created_at')
+    return {'tasks': rows, 'event_tags_enabled': service.event_tags.enabled, 'event_migration': service.event_tags.migration(), 'event_operations': operations}
+
+
+@app.delete('/api/v1/event-operations/{operation_id}', status_code=204)
+def cancel_event_operation(operation_id: UUID):
+    service.cancel_event_operation(str(operation_id))
+    return Response(status_code=204)
 
 
 @app.get('/api/v1/migration')

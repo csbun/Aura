@@ -49,7 +49,7 @@ def main():
     args = parser.parse_args()
     config = ImmichConfig.from_env()
     try:
-        client = ImmichClient(ImmichSettings(config.url, config.api_key))
+        client = ImmichClient(ImmichSettings(config.url, config.api_key, config.job_api_key))
         if args.tag_test_asset:
             from .tag_check import check_tag_persistence
             result = check_tag_persistence(client, str(args.tag_test_asset))

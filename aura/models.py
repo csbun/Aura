@@ -9,7 +9,7 @@ class AlbumQuery(BaseModel):
     model_config = ConfigDict(extra='forbid')
     person_ids: list[UUID] = Field(default_factory=list, max_length=20)
     tag_ids: list[UUID] = Field(default_factory=list, max_length=20)
-    event: int | None = Field(default=None, gt=0)
+    event: UUID | None = None
     start: datetime | None = None
     end: datetime | None = None
     city: str | None = Field(default=None, max_length=200)
@@ -57,12 +57,12 @@ class ReviewRequest(BaseModel):
 
 class MergeEventsRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    event_ids: list[int] = Field(min_length=2, max_length=100)
+    event_ids: list[UUID] = Field(min_length=2, max_length=100)
     name: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator('event_ids')
     @classmethod
     def unique_positive_ids(cls, value):
-        if any(i <= 0 for i in value) or len(set(value)) != len(value):
+        if len(set(value)) != len(value):
             raise ValueError('请选择至少两个不同事件')
         return value

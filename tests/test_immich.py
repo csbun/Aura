@@ -157,5 +157,53 @@ def test_tag_writes_still_require_verified_upstream_version():
 def test_tag_job_check_refuses_missing_or_paused_queues():
     client,_=client_with_pages([{}])
     with pytest.raises(ImmichError):client.jobs_idle(('sidecar',))
-    client,_=client_with_pages([{'sidecar':{'jobCounts':{'active':0,'waiting':1},'queueStatus':{'isPaused':True}}}])
+    client,_=client_with_pages([{'sidecar':{'jobCounts':{'active':0,'waiting':1,'delayed':0,'failed':0},'queueStatus':{'isPaused':True}}}])
     with pytest.raises(ImmichError,match='已暂停'):client.jobs_idle(('sidecar',))
+
+
+def test_tag_writes_wait_for_sidecar_and_metadata_to_stay_idle(monkeypatch):
+    client, _ = client_with_pages([])
+    observed = []
+    states = iter([False, True, False, True, True])
+    def idle(names):
+        observed.append(names)
+        return next(states)
+    monkeypatch.setattr(client, 'jobs_idle', idle)
+    client.wait_tag_writes(sleep=lambda _: None)
+    assert len(observed) == 5
+    assert set(observed) == {('sidecar', 'metadataExtraction')}
+
+
+def test_tag_wait_timeout_and_failed_queue_never_report_success(monkeypatch):
+    client, _ = client_with_pages([])
+    monkeypatch.setattr(client, 'jobs_idle', lambda names: False)
+    ticks = iter(range(20))
+    with pytest.raises(ImmichError, match='仍忙碌'):
+        client.wait_tag_writes(timeout=2, sleep=lambda _: None, clock=lambda: next(ticks))
+    client, _ = client_with_pages([{'sidecar': {'jobCounts': {'active': 0, 'waiting': 0, 'delayed': 0, 'failed': 1}}}])
+    with pytest.raises(ImmichError, match='失败任务'):
+        client.jobs_idle(('sidecar',))
+
+
+def test_job_key_is_only_used_for_queue_reads(monkeypatch):
+    client = ImmichClient(ImmichSettings('http://immich', 'photo-key', 'queue-key'))
+    calls = []
+    def request(self, method, path, *args, **kwargs):
+        calls.append((self.settings.api_key, method, path))
+        if path == '/jobs':
+            return {'sidecar': {'jobCounts': {'active': 0, 'waiting': 0, 'delayed': 0, 'failed': 0}}}
+        return []
+    monkeypatch.setattr(ImmichClient, '_request', request)
+    assert client.jobs_idle(('sidecar',))
+    client.tags()
+    assert calls == [('queue-key', 'GET', '/jobs'), ('photo-key', 'GET', '/tags')]
+
+
+def test_tag_membership_paginates_without_excluding_offline_assets():
+    client, calls = client_with_pages([
+        {'assets': {'items': [{'id': A}], 'nextCursor': 'next'}},
+        {'assets': {'items': [{'id': B}], 'nextCursor': None}},
+    ])
+    assert [a['id'] for a in client.tag_assets(TAG)] == [A, B]
+    assert calls[0][2]['filter'] == {'tagIds': {'all': [TAG]}}
+    assert calls[1][2]['cursor'] == 'next'

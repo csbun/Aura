@@ -30,10 +30,11 @@ def test_event_review_identity_and_outage(service):
     service.immich.assets.append({'id':C,'localDateTime':'2025-05-01T09:00:00'})
     service.build_events()
     assert next(e for e in service.list_events() if e['id']==event['id'])['name']=='旅行'
-    assert service.database.fetch_all('SELECT asset_id FROM event_assets WHERE event_id=?',[event['id']])==[{'asset_id':A}]
+    assert {a['id'] for a in service.immich.tag_assets(event['id'])}=={A}
     before=service.list_events()
     service.immich.fail_search=True
     with pytest.raises(ImmichError):service.build_events()
+    service.immich.fail_search=False
     assert service.list_events()==before
 
 
@@ -101,10 +102,9 @@ def test_recover_ambiguous_album_creation_without_name_adoption(service):
 
 def test_rejected_event_pauses_existing_album(service):
     service.build_events();event=service.list_events()[0]['id']
-    service.review_event(event,'confirmed')
     album=service.save_album('event',{'event':event},'mirror')['id'];service.materialize(album)
     service.review_event(event,'rejected')
-    with pytest.raises(ValueError,match='不可用'):service.materialize(album)
+    with pytest.raises(LookupError,match='已删除'):service.materialize(album)
 
 
 def test_schedule_does_not_rescan_for_every_sync(service):
@@ -136,8 +136,10 @@ def test_legacy_migration_archives_and_preserves_ids(tmp_path):
     assert album['id']==4 and album['remote_id']==REMOTE and album['sync_mode']=='append'
     assert album['query']=={'person_ids':[PERSON],'event':8}
     assert album['migration_issue']
-    assert service.list_events()[0]['id']==8
-    assert service.database.fetch_all('SELECT asset_id FROM event_assets')==[{'asset_id':A}]
+    service.process_event_operations()
+    event=service.list_events()[0]
+    assert {a['id'] for a in service.immich.tag_assets(event['id'])}=={A}
+    assert service.list_smart_albums()[0]['query']=={'person_ids':[PERSON],'tag_ids':[event['id']]}
     archive=path.with_suffix('.pre-0.4.sqlite')
     with sqlite3.connect(archive) as c:assert c.execute('SELECT COUNT(*) FROM assets').fetchone()[0]==1
     report=json.loads(service.database.get_setting('migration_report'))
@@ -146,7 +148,7 @@ def test_legacy_migration_archives_and_preserves_ids(tmp_path):
     assert service.sync_albums()['paused']==1
     service.database.initialize()
     assert len(service.list_smart_albums())==1
-    service.save_album('旅行人物',album['query'],'append',4)
+    service.save_album('旅行人物',service.list_smart_albums()[0]['query'],'append',4)
     assert not service.list_smart_albums()[0]['migration_issue']
 
 
@@ -156,7 +158,8 @@ def test_missing_mappings_are_blocked_not_widened(tmp_path):
         c.execute('DELETE FROM external_people')
         c.execute('DELETE FROM external_assets')
     service=AuraService(Database(path),FakeImmich())
-    assert service.list_events()[0]['issue']
+    assert service.database.fetch_all('SELECT issue FROM legacy_events')[0]['issue']
+    with pytest.raises(ImmichError):service.process_event_operations()
     assert service.list_smart_albums()[0]['migration_issue']
     with pytest.raises(ValueError):service.materialize(4)
     assert not service.immich.remote

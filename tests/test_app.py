@@ -18,7 +18,7 @@ def app_client(tmp_path,monkeypatch):
 
 def test_extension_routes_and_removed_management(tmp_path,monkeypatch):
     client,module=app_client(tmp_path,monkeypatch)
-    assert client.get('/health').json()['version']=='0.4.1'
+    assert client.get('/health').json()['version']=='0.4.2'
     assert '高级整理' in client.get('/').text
     assert client.get('/static/app.js').status_code==200
     assert client.get('/api/v1/people').json()[0]['id']==PERSON
@@ -42,7 +42,7 @@ def test_preview_edit_and_validation(tmp_path,monkeypatch):
     assert client.get('/api/v1/smart-albums').json()[0]['remote_id']
     assert client.post('/api/v1/smart-albums',json={'name':'bad','query':{'person_id':2}}).status_code==422
     assert client.post('/api/v1/smart-albums/preview',json={'query':{'start':'2026-01-01','end':'2025-01-01'}}).status_code==422
-    assert client.patch('/api/v1/events/999',json={'state':'confirmed'}).status_code==404
+    assert client.patch('/api/v1/events/'+A,json={'name':'missing'}).status_code==404
     module.immich.fail_search=True
     assert client.post('/api/v1/smart-albums/preview',json={'query':{}}).status_code==502
     assert client.get('/api/v1/events').status_code==200
@@ -64,7 +64,7 @@ def test_default_event_workflow_merge_and_delete(tmp_path,monkeypatch):
     assert client.delete(f'/api/v1/events/{event}').status_code==200
     assert client.get('/api/v1/events').json()==[]
     assert client.get(f'/api/v1/events/{event}/assets').status_code==404
-    assert client.delete('/api/v1/events/99999').status_code==404
+    assert client.delete('/api/v1/events/'+A).status_code==404
 
 
 def test_delete_album_rule_works_offline_and_is_idempotent(tmp_path,monkeypatch):

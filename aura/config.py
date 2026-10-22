@@ -24,8 +24,9 @@ class ImmichConfig:
     api_key: str
     public_url: str = ''
     port: int = 2283
+    job_api_key: str = ''
 
     @classmethod
     def from_env(cls) -> 'ImmichConfig':
         return cls(os.getenv('IMMICH_URL', '').rstrip('/'), os.getenv('IMMICH_API_KEY', ''),
-                   os.getenv('IMMICH_PUBLIC_URL', '').rstrip('/'), int(os.getenv('IMMICH_PORT', '2283')))
+                   os.getenv('IMMICH_PUBLIC_URL', '').rstrip('/'), int(os.getenv('IMMICH_PORT', '2283')), os.getenv('IMMICH_JOB_API_KEY', ''))

@@ -58,5 +58,10 @@ def check_tag_persistence(client, asset_id, *, timeout=30, sleep=time.sleep, clo
         if tag_id is not None and any(t['id'] == tag_id for t in tags) and not matches:
             raise ImmichError('测试标签被改名或移动，未自动删除，请核对测试标签')
         for tag in matches:
+            _wait(idle, timeout, sleep, clock)
+            if tag['id'] in {t['id'] for t in client.asset_detail(asset_id)['tags']}:
+                client.change_tag_assets(tag['id'], {asset_id}, remove=True)
+                _wait(idle, timeout, sleep, clock)
             client.delete_tag(tag['id'])
+            _wait(idle, timeout, sleep, clock)
     return result

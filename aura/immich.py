@@ -6,6 +6,7 @@ Searches fail closed: malformed/incomplete pagination never becomes an empty alb
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -22,6 +23,7 @@ class ImmichError(RuntimeError):
 class ImmichSettings:
     base_url: str
     api_key: str
+    job_api_key: str = ''
 
     @property
     def configured(self) -> bool:
@@ -280,17 +282,65 @@ class ImmichClient:
         self._request('POST', '/assets/jobs', {'assetIds': [asset_id], 'name': 'refresh-metadata'})
 
     def jobs_idle(self, names: tuple[str, ...]) -> bool:
-        result = self._request('GET', '/jobs')
+        reader = (ImmichClient(ImmichSettings(self.settings.base_url, self.settings.job_api_key), self.timeout)
+                  if self.settings.job_api_key else self)
+        try:
+            result = reader._request('GET', '/jobs')
+        except ImmichError as error:
+            raise ImmichError('无法读取 Immich 任务队列：请配置管理员的 IMMICH_JOB_API_KEY（job.read）；照片仍使用原 API key') from error
         if not isinstance(result, dict):
             raise ImmichError('Immich: invalid queue response')
         idle = True
         for name in names:
             queue = result.get(name, {})
             counts = queue.get('jobCounts', {})
-            if any(type(counts.get(key)) is not int for key in ('active', 'waiting')):
+            if any(type(counts.get(key)) is not int or counts.get(key, 0) < 0 for key in ('active', 'waiting', 'delayed', 'failed')):
                 raise ImmichError(f'Immich: missing queue counts for {name}')
+            if counts['failed']:
+                raise ImmichError(f'Immich {name} 存在失败任务，请先处理后重试')
             busy = any(counts.get(key, 0) > 0 for key in ('active', 'waiting', 'delayed'))
             if busy and queue.get('queueStatus', {}).get('isPaused'):
                 raise ImmichError(f'Immich {name} 队列已暂停，无法完成持久性检查')
             idle = idle and not busy
         return idle
+
+    def wait_tag_writes(self, *, timeout=30, sleep=time.sleep, clock=time.monotonic):
+        """Drain the upstream write/read pipeline before another tag mutation.
+
+        HTTP success only confirms the database write; an older sidecar job can
+        otherwise overwrite a subsequent edit. Two idle observations also cover
+        the transition between sidecar writes and metadata extraction.
+        """
+        deadline, stable = clock() + timeout, 0
+        while stable < 2:
+            stable = stable + 1 if self.jobs_idle(('sidecar', 'metadataExtraction')) else 0
+            if stable == 2:
+                return
+            if clock() >= deadline:
+                raise ImmichError('Immich 标签写入队列仍忙碌，任务保留并稍后重试')
+            sleep(0.25)
+
+    def tag_assets(self, tag_id: str) -> list[dict]:
+        """Complete tag membership, including offline assets; never a cached replica."""
+        rows, seen, cursors = [], set(), set()
+        payload = {'filter': {'tagIds': {'all': [tag_id]}}, 'size': 1000,
+                   'withExif': False, 'withPeople': False, 'withStacked': False}
+        for _ in range(1000):
+            result = self._request('POST', '/search/metadata', payload)
+            assets = result.get('assets') if isinstance(result, dict) else None
+            if not isinstance(assets, dict) or 'nextCursor' not in assets:
+                raise ImmichError('Immich: invalid tag membership pagination')
+            batch = _items(assets.get('items'), 'tag assets')
+            ids = {a['id'] for a in batch}
+            if ids & seen:
+                raise ImmichError('Immich: repeated tag membership page')
+            rows.extend(batch)
+            seen.update(ids)
+            cursor = assets['nextCursor']
+            if cursor is None:
+                return rows
+            if not isinstance(cursor, str) or not cursor or cursor in cursors or not batch:
+                raise ImmichError('Immich: tag membership pagination did not advance')
+            cursors.add(cursor)
+            payload['cursor'] = cursor
+        raise ImmichError('Immich: tag membership pagination limit exceeded')

@@ -7,7 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+LEGACY_VERSION = 6
 SCHEMA = [
     'CREATE TABLE schema_version (version INTEGER NOT NULL)',
     "CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -51,18 +52,18 @@ class Database:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
-    def initialize(self):
+    def _initialize_v6(self):
         with self.lock('schema'), self.connect() as c:
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             version = c.execute('SELECT version FROM schema_version').fetchone() if 'schema_version' in tables else None
             if version and version[0] > SCHEMA_VERSION:
                 raise RuntimeError('Aura database is newer than this application; downgrade refused')
-            if version and version[0] == SCHEMA_VERSION:
+            if version and version[0] >= LEGACY_VERSION:
                 return
             if version and version[0] == 5:
                 c.execute('BEGIN IMMEDIATE')
                 self._automatic_events(c)
-                c.execute('UPDATE schema_version SET version=?', [SCHEMA_VERSION])
+                c.execute('UPDATE schema_version SET version=?', [LEGACY_VERSION])
                 return
             if tables:
                 legacy_tables = {'schema_version', 'assets', 'people', 'asset_people', 'tags', 'asset_tags',
@@ -90,7 +91,7 @@ class Database:
                 c.execute('DROP TABLE "' + name.replace('"', '""') + '"')
             for statement in SCHEMA:
                 c.execute(statement)
-            c.execute('INSERT INTO schema_version VALUES (?)', [SCHEMA_VERSION])
+            c.execute('INSERT INTO schema_version VALUES (?)', [LEGACY_VERSION])
             c.execute('INSERT INTO settings VALUES (?,?)', ['instance_id', str(uuid4())])
             for row in events:
                 c.execute('INSERT INTO events(id,name,starts_at,ends_at,review_state,source,issue,created_at) VALUES (?,?,?,?,?,?,?,?)', row)
@@ -101,6 +102,38 @@ class Database:
                 c.execute('INSERT INTO settings VALUES (?,?)', ['migration_report', json.dumps(report, ensure_ascii=False)])
             self._automatic_events(c)
             c.commit()
+
+    def initialize(self):
+        self._initialize_v6()
+        with self.lock('schema'), self.connect() as c:
+            if c.execute('SELECT version FROM schema_version').fetchone()[0] == SCHEMA_VERSION:
+                return
+            count = c.execute('SELECT COUNT(*) FROM events').fetchone()[0]
+            archive = self.path.with_suffix('.pre-0.4.2.sqlite')
+            if count and not archive.exists():
+                partial = archive.with_suffix('.tmp')
+                with sqlite3.connect(partial) as backup:
+                    c.backup(backup)
+                partial.chmod(0o600)
+                partial.replace(archive)
+            c.execute('BEGIN IMMEDIATE')
+            c.execute("""CREATE TABLE managed_event_tags (
+                tag_id TEXT PRIMARY KEY, origin TEXT NOT NULL UNIQUE,
+                mode TEXT NOT NULL DEFAULT 'automatic', state TEXT NOT NULL DEFAULT 'active',
+                fingerprint TEXT, legacy_id INTEGER UNIQUE)""")
+            c.execute('CREATE TABLE event_processed_assets (asset_id TEXT PRIMARY KEY)')
+            c.execute("""CREATE TABLE event_operations (
+                id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            c.execute('ALTER TABLE events RENAME TO legacy_events')
+            c.execute('ALTER TABLE event_assets RENAME TO legacy_event_assets')
+            if not count:
+                c.execute('DROP TABLE legacy_event_assets')
+                c.execute('DROP TABLE legacy_events')
+            report = {'complete': not bool(count), 'total': count, 'migrated': 0,
+                      'archive': archive.name if count else None}
+            c.execute('INSERT INTO settings VALUES (?,?)', ['event_tag_migration', json.dumps(report)])
+            c.execute('UPDATE schema_version SET version=?', [SCHEMA_VERSION])
 
     @staticmethod
     def _automatic_events(c):
