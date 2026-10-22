@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .events import build_candidates
+from .events import build_candidates, redirect_event_rules
 from .immich import ImmichError
 from .models import AlbumQuery
 from .query import parse_query
@@ -34,7 +34,7 @@ class AuraService:
         members = None
         if query.get('event'):
             event = self.database.fetch_all('SELECT * FROM events WHERE id=?', [query['event']])
-            if not event:
+            if not event or event[0]['review_state'] in ('deleted', 'merged', 'superseded'):
                 raise LookupError('事件不存在')
             if event[0]['issue']:
                 raise ValueError(event[0]['issue'])
@@ -57,16 +57,68 @@ class AuraService:
                 'assets': [{'id': r['id']} for r in rows[:12]]}
 
     def list_events(self):
-        return self.database.fetch_all("SELECT e.*, (SELECT COUNT(*) FROM event_assets WHERE event_id=e.id) AS asset_count FROM events e WHERE review_state!='superseded' ORDER BY starts_at DESC,id DESC")
+        return self.database.fetch_all("SELECT e.*, (SELECT COUNT(*) FROM event_assets WHERE event_id=e.id) AS asset_count FROM events e WHERE review_state IN ('confirmed','pending') ORDER BY starts_at DESC,id DESC")
 
-    def review_event(self, event_id, state, name=None):
-        with self.database.lock('albums'):
-            if not self.database.fetch_all('SELECT id FROM events WHERE id=?', [event_id]):
-                raise LookupError('事件不存在')
+    def review_event(self, event_id, state='confirmed', name=None):
+        if state == 'rejected':
+            return self.delete_event(event_id)
+        if state != 'confirmed':
+            raise ValueError('时间事件默认通过，无需设为待确认')
+        with self.database.lock('albums'), self.database.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            self._active_event(c, event_id)
             if name is not None and not name.strip():
                 raise ValueError('事件名称不能为空')
-            self.database.execute('UPDATE events SET review_state=?,name=COALESCE(?,name) WHERE id=?', [state, name.strip() if name else None, event_id])
-        return {'id': event_id, 'review_state': state}
+            c.execute("UPDATE events SET review_state='confirmed',source='manual',name=COALESCE(?,name) WHERE id=?",
+                      [name.strip() if name else None, event_id])
+        return {'id': event_id, 'review_state': 'confirmed'}
+
+    @staticmethod
+    def _active_event(c, event_id):
+        event = c.execute("SELECT * FROM events WHERE id=? AND review_state IN ('confirmed','pending')", [event_id]).fetchone()
+        if not event:
+            raise LookupError('事件不存在或已删除/合并')
+        return event
+
+    def merge_events(self, event_ids, name=None):
+        if len(set(event_ids)) < 2 or len(set(event_ids)) != len(event_ids):
+            raise ValueError('请选择至少两个不同事件')
+        if name is not None and not name.strip():
+            raise ValueError('事件名称不能为空')
+        with self.database.lock('albums'), self.database.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            events = [self._active_event(c, event_id) for event_id in sorted(event_ids)]
+            if any(e['issue'] for e in events):
+                raise ValueError('事件照片映射不完整，请先处理事件提示')
+            target = events[0]['id']
+            starts = [e['starts_at'] for e in events if e['starts_at']]
+            ends = [e['ends_at'] for e in events if e['ends_at']]
+            # Event bounds are local wall-clock values, matching the event grouping model.
+            date_key = lambda value: datetime.fromisoformat(value.replace('Z', '+00:00')).replace(tzinfo=None)
+            c.execute("UPDATE events SET name=?,starts_at=?,ends_at=?,source='manual',review_state='confirmed' WHERE id=?",
+                      [name.strip() if name else events[0]['name'], min(starts, key=date_key) if starts else None,
+                       max(ends, key=date_key) if ends else None, target])
+            for event in events[1:]:
+                c.execute('INSERT OR IGNORE INTO event_assets(event_id,asset_id) SELECT ?,asset_id FROM event_assets WHERE event_id=?', [target, event['id']])
+                c.execute("UPDATE events SET review_state='merged' WHERE id=?", [event['id']])
+            updated = redirect_event_rules(c, set(event_ids), target)
+            count = c.execute('SELECT COUNT(*) FROM event_assets WHERE event_id=?', [target]).fetchone()[0]
+        return {'id': target, 'asset_count': count, 'updated_albums': updated}
+
+    def delete_event(self, event_id):
+        with self.database.lock('albums'), self.database.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            existing = c.execute('SELECT review_state FROM events WHERE id=?', [event_id]).fetchone()
+            if existing and existing['review_state'] == 'deleted':
+                return {'id': event_id, 'review_state': 'deleted'}
+            self._active_event(c, event_id)
+            # Keep a tombstone and its IDs so the next automatic pass cannot recreate the event.
+            c.execute("UPDATE events SET review_state='deleted' WHERE id=?", [event_id])
+            for album in c.execute('SELECT id,query_json FROM smart_albums').fetchall():
+                if json.loads(album['query_json']).get('event') == event_id:
+                    c.execute('UPDATE smart_albums SET error=? WHERE id=?',
+                              ['关联事件已删除；更新已暂停，请编辑规则选择其他事件', album['id']])
+        return {'id': event_id, 'review_state': 'deleted'}
 
     def build_events(self):
         self.check_integration()
@@ -90,6 +142,9 @@ class AuraService:
             if event['review_state'] != 'confirmed':
                 raise ValueError('请先确认事件')
         with self.database.lock('albums'):
+            if query.get('event'):
+                with self.database.connect() as c:
+                    self._active_event(c, query['event'])
             if album_id is None:
                 album_id = self.database.execute('INSERT INTO smart_albums(name,query_json,sync_mode,matched_assets) VALUES (?,?,?,?)',
                                                 [name, json.dumps(query, ensure_ascii=False), sync_mode, len(rows)]).lastrowid
@@ -113,9 +168,11 @@ class AuraService:
             if query.get('event'):
                 events = self.database.fetch_all('SELECT review_state FROM events WHERE id=?', [query['event']])
                 if not events or events[0]['review_state'] != 'confirmed':
-                    raise ValueError('关联事件尚未确认；相册更新已暂停')
+                    raise ValueError('关联事件不可用（已删除、合并或未通过）；相册更新已暂停')
             desired = {r['id'] for r in self.search_assets(query)}
             remote_id = album['remote_id']
+            if remote_id and remote_id not in {a['id'] for a in self.immich.albums()}:
+                raise ImmichError('关联的 Immich 相册已删除或无读取权限；请检查 Immich 相册及 API key，或新建相册规则')
             if not remote_id:
                 marker = f"Aura rule {self.database.get_setting('instance_id')}:{album_id}"
                 existing = [r for r in self.immich.albums() if r.get('description') == marker]
@@ -141,7 +198,15 @@ class AuraService:
         self.check_integration()
         synced, errors, paused = 0, [], 0
         for album in self.list_smart_albums():
+            event_id = album['query'].get('event')
+            events = self.database.fetch_all('SELECT review_state FROM events WHERE id=?', [event_id]) if event_id else []
             if album['migration_issue']:
+                paused += 1
+                continue
+            if event_id and (not events or events[0]['review_state'] != 'confirmed'):
+                reason = '已删除' if events and events[0]['review_state'] == 'deleted' else '不可用'
+                self.database.execute('UPDATE smart_albums SET error=? WHERE id=?',
+                                      [f'关联事件{reason}；更新已暂停，请编辑规则选择其他事件', album['id']])
                 paused += 1
                 continue
             try:

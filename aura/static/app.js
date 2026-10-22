@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const selectedEvents = new Set();
 let catalog = { people: [], tags: [], events: [] },
   editing = null,
   baseUrl = "",
@@ -119,7 +120,7 @@ function setQuery(query) {
       (o) => o.value === String(query.event),
     )
   ) {
-    const option = el("option", "未确认或失效事件 #" + query.event);
+    const option = el("option", "已删除或失效事件 #" + query.event);
     option.value = String(query.event);
     $("album-event").append(option);
   }
@@ -175,18 +176,42 @@ async function loadCatalog() {
   setQuery(query);
   renderEvents();
 }
+function updateEventSelection() {
+  $("event-selection").textContent = `已选 ${selectedEvents.size} 个事件`;
+  $("merge-events").disabled = selectedEvents.size < 2;
+}
 function renderEvents() {
-  const events = catalog.events.filter(
-    (e) => e.review_state === $("event-filter").value,
+  const liveIds = new Set(catalog.events.map((e) => e.id));
+  for (const id of selectedEvents)
+    if (!liveIds.has(id)) selectedEvents.delete(id);
+  const term = $("event-filter").value.trim().toLowerCase();
+  const events = catalog.events.filter((e) =>
+    `${e.name} ${e.starts_at || ""} ${e.ends_at || ""}`
+      .toLowerCase()
+      .includes(term),
   );
   $("events").replaceChildren();
   events.slice(0, visibleEvents).forEach((event) => {
     const card = el("article", undefined, "card");
+    const selection = el("label", undefined, "event-choice");
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedEvents.has(event.id);
+    checkbox.onchange = () => {
+      if (checkbox.checked) selectedEvents.add(event.id);
+      else selectedEvents.delete(event.id);
+      updateEventSelection();
+    };
+    selection.append(checkbox, el("strong", event.name));
+    card.append(selection);
+    const dates = [
+      event.starts_at?.slice(0, 10),
+      event.ends_at?.slice(0, 10),
+    ].filter(Boolean);
     card.append(
-      el("h3", event.name),
       el(
         "p",
-        `${event.asset_count} 张 · ${event.starts_at?.slice(0, 10) || ""}`,
+        `${event.asset_count} 张 · ${Array.from(new Set(dates)).join(" — ")}`,
         "muted",
       ),
     );
@@ -205,24 +230,37 @@ function renderEvents() {
         await loadEventPage();
       }),
     );
-    for (const [state, label] of [
-      ["confirmed", "确认"],
-      ["rejected", "拒绝"],
-    ])
-      actions.append(
-        button(label, async () => {
-          await api("/events/" + event.id, {
-            method: "PATCH",
-            body: JSON.stringify({ state, name: name.value }),
-          });
-          await loadCatalog();
-        }),
-      );
+    actions.append(
+      button("保存名称", async () => {
+        await api("/events/" + event.id, {
+          method: "PATCH",
+          body: JSON.stringify({ name: name.value }),
+        });
+        await loadCatalog();
+        await loadAlbums();
+      }),
+    );
+    actions.append(
+      button("删除事件", async () => {
+        if (
+          !window.confirm(
+            `删除事件“${event.name}”？照片和 Immich 相册会保留，相关规则暂停；原成员不会再次生成事件。`,
+          )
+        )
+          return;
+        await api("/events/" + event.id, { method: "DELETE" });
+        selectedEvents.delete(event.id);
+        $("events-status").textContent = "事件已删除，照片保留。";
+        await loadCatalog();
+        await loadAlbums();
+      }),
+    );
     card.append(actions);
     $("events").append(card);
   });
-  if (!events.length) $("events").append(el("p", "暂无此类事件。", "muted"));
+  if (!events.length) $("events").append(el("p", "没有匹配的事件。", "muted"));
   $("events-more").hidden = visibleEvents >= events.length;
+  updateEventSelection();
 }
 async function loadEventPage() {
   $("event-preview-status").textContent = "正在从 Immich 读取…";
@@ -334,7 +372,7 @@ async function loadStatus() {
     );
     if (task.error) row.append(el("span", " · " + task.error, "warning"));
     if (task.result?.paused)
-      row.append(el("span", ` · ${task.result.paused} 个规则待迁移复核`));
+      row.append(el("span", ` · ${task.result.paused} 个规则待处理`));
     $("tasks").append(row);
   });
 }
@@ -410,10 +448,38 @@ $("parse-form").onsubmit = act(async (event) => {
       ? " 重名需手选：" + result.ambiguous_names.join("、")
       : "");
 });
-$("event-filter").onchange = () => {
+$("event-filter").oninput = () => {
   visibleEvents = 20;
   renderEvents();
 };
+$("clear-events").onclick = () => {
+  selectedEvents.clear();
+  renderEvents();
+};
+$("merge-events").onclick = act(async () => {
+  const ids = Array.from(selectedEvents);
+  const name = $("merge-name").value.trim();
+  $("merge-events").disabled = true;
+  try {
+    const result = await api("/events/merge", {
+      method: "POST",
+      body: JSON.stringify({ event_ids: ids, ...(name ? { name } : {}) }),
+    });
+    const query = formQuery();
+    if (ids.includes(query.event)) {
+      query.event = result.id;
+      setQuery(query);
+    }
+    selectedEvents.clear();
+    $("merge-name").value = "";
+    $("events-status").textContent =
+      `已合并 ${ids.length} 个事件，共 ${result.asset_count} 张照片；${result.updated_albums} 个相册规则已关联到合并后的事件。`;
+    await loadCatalog();
+    await loadAlbums();
+  } finally {
+    updateEventSelection();
+  }
+});
 $("events-more").onclick = () => {
   visibleEvents += 20;
   renderEvents();

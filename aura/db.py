@@ -7,13 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SCHEMA = [
     'CREATE TABLE schema_version (version INTEGER NOT NULL)',
     "CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
     """CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-       starts_at TEXT, ends_at TEXT, review_state TEXT NOT NULL DEFAULT 'pending',
-       source TEXT NOT NULL DEFAULT 'candidate', issue TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+       starts_at TEXT, ends_at TEXT, review_state TEXT NOT NULL DEFAULT 'confirmed',
+       source TEXT NOT NULL DEFAULT 'automatic', issue TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE event_assets (event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
        asset_id TEXT NOT NULL, PRIMARY KEY(event_id, asset_id))""",
     'CREATE INDEX event_assets_asset ON event_assets(asset_id)',
@@ -59,6 +59,11 @@ class Database:
                 raise RuntimeError('Aura database is newer than this application; downgrade refused')
             if version and version[0] == SCHEMA_VERSION:
                 return
+            if version and version[0] == 5:
+                c.execute('BEGIN IMMEDIATE')
+                self._automatic_events(c)
+                c.execute('UPDATE schema_version SET version=?', [SCHEMA_VERSION])
+                return
             if tables:
                 legacy_tables = {'schema_version', 'assets', 'people', 'asset_people', 'tags', 'asset_tags',
                                  'events', 'event_assets', 'smart_albums', 'external_assets', 'external_albums',
@@ -94,7 +99,15 @@ class Database:
                 c.execute('INSERT INTO smart_albums(id,name,query_json,remote_id,sync_mode,migration_issue,created_at) VALUES (?,?,?,?,?,?,?)', row)
             if report:
                 c.execute('INSERT INTO settings VALUES (?,?)', ['migration_report', json.dumps(report, ensure_ascii=False)])
+            self._automatic_events(c)
             c.commit()
+
+    @staticmethod
+    def _automatic_events(c):
+        # Previously confirmed events were human decisions; keep their membership fixed.
+        c.execute("UPDATE events SET source='manual' WHERE review_state='confirmed' AND source='candidate'")
+        c.execute("UPDATE events SET source=CASE WHEN source='candidate' THEN 'automatic' ELSE source END, review_state='confirmed' WHERE review_state='pending'")
+        c.execute("UPDATE events SET review_state='deleted' WHERE review_state='rejected'")
 
     def execute(self, sql, params=()):
         with self.connect() as c:

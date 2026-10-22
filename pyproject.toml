@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aura"
-version = "0.4.0"
+version = "0.4.1"
 description = "Immich extension for events and dynamic album rules"
 requires-python = ">=3.11"
 dependencies = [

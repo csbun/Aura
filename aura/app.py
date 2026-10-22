@@ -10,7 +10,7 @@ from . import __version__
 from .config import ImmichConfig, Settings
 from .db import Database
 from .immich import ImmichClient, ImmichError, ImmichSettings, SUPPORTED_VERSIONS
-from .models import AlbumRequest, QueryRequest, ReviewRequest
+from .models import AlbumRequest, QueryRequest, ReviewRequest, MergeEventsRequest
 from .service import AuraService
 
 settings, immich_config = Settings.from_env(), ImmichConfig.from_env()
@@ -55,6 +55,16 @@ def tags():
 @app.get('/api/v1/events')
 def events():
     return service.list_events()
+
+
+@app.post('/api/v1/events/merge')
+def merge_events(request: MergeEventsRequest):
+    return service.merge_events(request.event_ids, request.name)
+
+
+@app.delete('/api/v1/events/{event_id}')
+def delete_event(event_id: int):
+    return service.delete_event(event_id)
 
 
 @app.patch('/api/v1/events/{event_id}')

@@ -18,7 +18,7 @@ def app_client(tmp_path,monkeypatch):
 
 def test_extension_routes_and_removed_management(tmp_path,monkeypatch):
     client,module=app_client(tmp_path,monkeypatch)
-    assert client.get('/health').json()['version']=='0.4.0'
+    assert client.get('/health').json()['version']=='0.4.1'
     assert '高级整理' in client.get('/').text
     assert client.get('/static/app.js').status_code==200
     assert client.get('/api/v1/people').json()[0]['id']==PERSON
@@ -47,3 +47,21 @@ def test_preview_edit_and_validation(tmp_path,monkeypatch):
     assert client.post('/api/v1/smart-albums/preview',json={'query':{}}).status_code==502
     assert client.get('/api/v1/events').status_code==200
     assert client.get('/api/v1/smart-albums').status_code==200
+
+
+def test_default_event_workflow_merge_and_delete(tmp_path,monkeypatch):
+    client,module=app_client(tmp_path,monkeypatch)
+    module.service.build_events()
+    events=client.get('/api/v1/events').json()
+    assert all(e['review_state']=='confirmed' for e in events)
+    ids=[e['id'] for e in events]
+    assert client.post('/api/v1/events/merge',json={'event_ids':[ids[0],ids[0]]}).status_code==422
+    assert client.post('/api/v1/events/merge',json={'event_ids':[ids[0]]}).status_code==422
+    result=client.post('/api/v1/events/merge',json={'event_ids':ids,'name':'旅行'})
+    assert result.status_code==200 and result.json()['asset_count']==2
+    event=result.json()['id']
+    assert client.patch(f'/api/v1/events/{event}',json={'name':'新名称'}).status_code==200
+    assert client.delete(f'/api/v1/events/{event}').status_code==200
+    assert client.get('/api/v1/events').json()==[]
+    assert client.get(f'/api/v1/events/{event}/assets').status_code==404
+    assert client.delete('/api/v1/events/99999').status_code==404

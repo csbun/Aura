@@ -104,7 +104,7 @@ def test_rejected_event_pauses_existing_album(service):
     service.review_event(event,'confirmed')
     album=service.save_album('event',{'event':event},'mirror')['id'];service.materialize(album)
     service.review_event(event,'rejected')
-    with pytest.raises(ValueError,match='尚未确认'):service.materialize(album)
+    with pytest.raises(ValueError,match='不可用'):service.materialize(album)
 
 
 def test_schedule_does_not_rescan_for_every_sync(service):
