@@ -123,3 +123,5 @@ pytest -q
 ```
 
 HTTP API 文档：`http://<主机IP>:18080/docs`。路线见 [ROADMAP](ROADMAP.md)。
+
+个人相册测试图片：见 [CITIES / PIPA 完整处理流程](docs/album-samples.md)。运行 `.venv/bin/python scripts/prepare_album_samples.py --count 500`，自动下载、恢复日期、补入城市近似坐标、无损写入 EXIF，并清理原图和缓存，只保留改写后的照片。PIPA 日期缺失或匹配不确定的照片会跳过；本次最终保留 CITIES 500 张、PIPA 442 张。
