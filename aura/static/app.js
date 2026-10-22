@@ -552,8 +552,7 @@ $("event-more").onclick = act(async () => {
 });
 $("close-event").onclick = () => $("event-dialog").close();
 $("refresh").onclick = act(async () => {
-  await loadCatalog();
-  await Promise.all([loadStatus(), loadAlbums()]);
+  await Promise.all([loadCatalog(), loadStatus(), loadAlbums()]);
 });
 act(async () => {
   const config = await api("/config");
@@ -564,8 +563,11 @@ act(async () => {
     throw new Error("IMMICH_PUBLIC_URL 必须是 HTTP(S) 地址");
   baseUrl = publicUrl.href.replace(/\/$/, "");
   $("immich-link").href = baseUrl;
-  await loadCatalog();
-  await Promise.all([loadStatus(), loadAlbums()]);
+  // Migration holds the event lock; keep progress polling independent of it.
+  setInterval(() => {
+    Promise.all([loadStatus(), loadAlbums()]).catch(fail);
+  }, 15000);
+  await Promise.all([loadCatalog(), loadStatus(), loadAlbums()]);
   const migration = await api("/migration");
   if (migration) {
     $("migration").hidden = false;
@@ -582,7 +584,4 @@ act(async () => {
       ),
     );
   }
-  setInterval(() => {
-    Promise.all([loadStatus(), loadAlbums()]).catch(fail);
-  }, 15000);
 })();
