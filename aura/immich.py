@@ -213,3 +213,84 @@ class ImmichClient:
         if not isinstance(result, dict) or result.get('id') != person_id or result.get('name') != name:
             raise ImmichError('Immich did not confirm migrated person name')
         return 'done'
+
+    @staticmethod
+    def _tag(result, expected_id=None):
+        if (not isinstance(result, dict) or not isinstance(result.get('id'), str)
+                or not isinstance(result.get('name'), str)
+                or not isinstance(result.get('value'), str)
+                or (expected_id is not None and result['id'] != expected_id)):
+            raise ImmichError('Immich: invalid tag response')
+        return result
+
+    def tag(self, tag_id: str) -> dict:
+        return self._tag(self._request('GET', f'/tags/{quote(tag_id, safe="")}'), tag_id)
+
+    def create_tag(self, name: str, parent_id: str | None = None) -> dict:
+        self.require_supported()
+        if not name.strip() or '/' in name:
+            raise ValueError('标签名称不能为空或包含 /；层级通过父标签指定')
+        payload = {'name': name}
+        if parent_id:
+            payload['parentId'] = parent_id
+        result = self._tag(self._request('POST', '/tags', payload))
+        if result['name'] != name or result.get('parentId') != parent_id:
+            raise ImmichError('Immich did not confirm the requested tag hierarchy')
+        return result
+
+    def rename_tag(self, tag_id: str, name: str) -> dict:
+        self.require_supported()
+        if not name.strip() or '/' in name:
+            raise ValueError('标签名称不能为空或包含 /')
+        result = self._tag(self._request('PUT', f'/tags/{quote(tag_id, safe="")}', {'name': name}), tag_id)
+        if result['name'] != name:
+            raise ImmichError('Immich did not confirm the tag name')
+        return result
+
+    def change_tag_assets(self, tag_id: str, ids: set[str], *, remove=False):
+        if not ids:
+            return
+        self.require_supported()
+        ordered = sorted(ids)
+        for offset in range(0, len(ordered), 500):
+            batch = ordered[offset:offset + 500]
+            result = _items(self._request('DELETE' if remove else 'PUT',
+                                         f'/tags/{quote(tag_id, safe="")}/assets', {'ids': batch}), 'tag membership')
+            accepted = {r['id'] for r in result if r.get('success') is True
+                        or (not remove and r.get('error') == 'duplicate')}
+            if set(batch) - accepted:
+                raise ImmichError('Immich 未完成标签照片关联更新，不能继续迁移或删除旧数据')
+
+    def delete_tag(self, tag_id: str):
+        self.require_supported()
+        # A child may have been added manually. Never cascade into an unrelated tag.
+        if any(tag.get('parentId') == tag_id for tag in self.tags()):
+            raise ImmichError('标签含有子标签，请先处理子标签后再删除')
+        self._request('DELETE', f'/tags/{quote(tag_id, safe="")}')
+
+    def asset_detail(self, asset_id: str) -> dict:
+        result = self._request('GET', f'/assets/{quote(asset_id, safe="")}')
+        if not isinstance(result, dict) or result.get('id') != asset_id or not isinstance(result.get('updatedAt'), str):
+            raise ImmichError('Immich: invalid asset detail response')
+        _items(result.get('tags'), 'asset tags')
+        return result
+
+    def refresh_asset_metadata(self, asset_id: str):
+        self.require_supported()
+        self._request('POST', '/assets/jobs', {'assetIds': [asset_id], 'name': 'refresh-metadata'})
+
+    def jobs_idle(self, names: tuple[str, ...]) -> bool:
+        result = self._request('GET', '/jobs')
+        if not isinstance(result, dict):
+            raise ImmichError('Immich: invalid queue response')
+        idle = True
+        for name in names:
+            queue = result.get(name, {})
+            counts = queue.get('jobCounts', {})
+            if any(type(counts.get(key)) is not int for key in ('active', 'waiting')):
+                raise ImmichError(f'Immich: missing queue counts for {name}')
+            busy = any(counts.get(key, 0) > 0 for key in ('active', 'waiting', 'delayed'))
+            if busy and queue.get('queueStatus', {}).get('isPaused'):
+                raise ImmichError(f'Immich {name} 队列已暂停，无法完成持久性检查')
+            idle = idle and not busy
+        return idle

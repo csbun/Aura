@@ -116,3 +116,46 @@ def test_legacy_name_migration_never_overwrites_existing_name():
     client,calls=client_with_pages([{'major':3,'minor':3,'patch':4},{'id':PERSON,'name':'old name'}])
     assert client.migrate_person_name(PERSON,'old name')=='done'
     assert not any(c[0]=='PUT' for c in calls)
+
+
+def test_tag_hierarchy_and_rename_contract():
+    version={'major':3,'minor':3,'patch':4}
+    client,calls=client_with_pages([version,{'id':TAG,'name':'旅行','value':'事件/旅行','parentId':REMOTE}])
+    assert client.create_tag('旅行',REMOTE)['id']==TAG
+    assert calls[-1]==('POST','/tags',{'name':'旅行','parentId':REMOTE})
+    client,calls=client_with_pages([version,{'id':TAG,'name':'新旅行','value':'事件/新旅行','parentId':REMOTE}])
+    assert client.rename_tag(TAG,'新旅行')['name']=='新旅行'
+    assert calls[-1]==('PUT','/tags/'+TAG,{'name':'新旅行'})
+
+
+def test_tag_bulk_failure_never_becomes_success():
+    version={'major':3,'minor':3,'patch':4}
+    client,calls=client_with_pages([version,[{'id':A,'success':True},{'id':B,'success':False,'error':'not_found'}]])
+    with pytest.raises(ImmichError,match='不能继续迁移'):
+        client.change_tag_assets(TAG,{A,B})
+    assert calls[-1][0:2]==('PUT','/tags/'+TAG+'/assets')
+    client,calls=client_with_pages([version,[{'id':A,'success':False,'error':'duplicate'}]])
+    client.change_tag_assets(TAG,{A})
+    client,calls=client_with_pages([version,[{'id':A,'success':True}]])
+    client.change_tag_assets(TAG,{A},remove=True)
+    assert calls[-1][0]=='DELETE'
+
+
+def test_tag_delete_refuses_cascading_into_user_children():
+    client,calls=client_with_pages([{'major':3,'minor':3,'patch':4},[{'id':REMOTE,'parentId':TAG}]])
+    with pytest.raises(ImmichError,match='子标签'):
+        client.delete_tag(TAG)
+    assert not any(c[0]=='DELETE' for c in calls)
+
+
+def test_tag_writes_still_require_verified_upstream_version():
+    client,calls=client_with_pages([{'major':4,'minor':0,'patch':0}])
+    with pytest.raises(ImmichError):client.create_tag('旅行')
+    assert len(calls)==1
+
+
+def test_tag_job_check_refuses_missing_or_paused_queues():
+    client,_=client_with_pages([{}])
+    with pytest.raises(ImmichError):client.jobs_idle(('sidecar',))
+    client,_=client_with_pages([{'sidecar':{'jobCounts':{'active':0,'waiting':1},'queueStatus':{'isPaused':True}}}])
+    with pytest.raises(ImmichError,match='已暂停'):client.jobs_idle(('sidecar',))

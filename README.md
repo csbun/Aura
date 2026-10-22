@@ -115,6 +115,10 @@ docker compose exec aura aura-check --write-test
 
 运行数据：`data/` 保存 Aura 事件和规则；`immich/` 保存 Immich 数据库及衍生文件。不要删除或放到 SMB 数据库目录。仅面向可信局域网，Aura 当前使用单用户 API key，无独立登录。
 
+## 0.4.2 开发状态
+
+事件改存 Immich 标签已独立为 0.4.2，标签接口和持久性检查工具已实现。当前只读外部库在刷新元数据后会丢失标签关联，尚未执行事件迁移；现有事件保持原存储。实测与可选样本配置见 [标签持久性验证](docs/event-tag-persistence.md)。跨日活动识别、人物/画面判断及自动命名仍属于 0.5。
+
 ## 开发
 
 ```bash
