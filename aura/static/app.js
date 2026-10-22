@@ -12,6 +12,7 @@ async function api(path, options = {}) {
     ...options,
     headers: { "Content-Type": "application/json", ...options.headers },
   });
+  if (response.status === 204) return null;
   const value = await response.json();
   if (!response.ok)
     throw new Error(
@@ -342,6 +343,19 @@ async function loadAlbums() {
           await loadAlbums();
         }),
       );
+    actions.append(
+      button("删除规则", async () => {
+        if (
+          !window.confirm(
+            `删除规则“${album.name}”？将停止自动更新，照片和 Immich 相册保留。`,
+          )
+        )
+          return;
+        await api(`/smart-albums/${album.id}`, { method: "DELETE" });
+        if (editing === album.id) resetForm();
+        await loadAlbums();
+      }),
+    );
     if (album.remote_id)
       actions.append(
         link(

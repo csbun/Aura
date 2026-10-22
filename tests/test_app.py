@@ -65,3 +65,19 @@ def test_default_event_workflow_merge_and_delete(tmp_path,monkeypatch):
     assert client.get('/api/v1/events').json()==[]
     assert client.get(f'/api/v1/events/{event}/assets').status_code==404
     assert client.delete('/api/v1/events/99999').status_code==404
+
+
+def test_delete_album_rule_works_offline_and_is_idempotent(tmp_path,monkeypatch):
+    client,module=app_client(tmp_path,monkeypatch)
+    album=client.post('/api/v1/smart-albums',json={'name':'失效规则','query':{}}).json()['id']
+    remote=client.post(f'/api/v1/smart-albums/{album}/materialize').json()['remote_id']
+    members=set(module.immich.remote[remote]['assets'])
+    module.database.execute('UPDATE smart_albums SET error=? WHERE id=?',['关联的 Immich 相册已删除或无读取权限',album])
+    def offline(*args,**kwargs):raise RuntimeError('Immich is offline')
+    monkeypatch.setattr(module.immich,'require_supported',offline)
+    assert client.get('/api/v1/smart-albums').json()[0]['error']
+    response=client.delete(f'/api/v1/smart-albums/{album}')
+    assert response.status_code==204 and response.content==b''
+    assert client.delete(f'/api/v1/smart-albums/{album}').status_code==204
+    assert client.get('/api/v1/smart-albums').json()==[]
+    assert module.immich.remote[remote]['assets']==members

@@ -98,6 +98,12 @@ def update_album(album_id: int, request: AlbumRequest):
     return service.save_album(request.name, request.query.compact(), request.sync_mode, album_id)
 
 
+@app.delete('/api/v1/smart-albums/{album_id}', status_code=204)
+def delete_album(album_id: int):
+    service.delete_album(album_id)
+    return Response(status_code=204)
+
+
 @app.post('/api/v1/smart-albums/{album_id}/materialize')
 def materialize(album_id: int):
     return service.materialize(album_id)

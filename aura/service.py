@@ -155,6 +155,11 @@ class AuraService:
                                       [name, json.dumps(query, ensure_ascii=False), sync_mode, len(rows), album_id])
         return {'id': album_id, 'matched_assets': len(rows)}
 
+    def delete_album(self, album_id):
+        # Serialize against in-flight writes; deletion never calls Immich.
+        with self.database.lock('albums'):
+            self.database.execute('DELETE FROM smart_albums WHERE id=?', [album_id])
+
     def materialize(self, album_id):
         with self.database.lock('albums'):
             self.check_integration()
@@ -213,7 +218,9 @@ class AuraService:
                 self.materialize(album['id'])
                 synced += 1
             except Exception as error:
-                self.database.execute('UPDATE smart_albums SET error=? WHERE id=?', [str(error), album['id']])
+                updated = self.database.execute('UPDATE smart_albums SET error=? WHERE id=?', [str(error), album['id']])
+                if not updated.rowcount:  # Deleted after this batch took its snapshot.
+                    continue
                 errors.append(f"相册 {album['id']}: {error}")
         return {'albums': synced, 'paused': paused, 'errors': errors}
 

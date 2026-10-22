@@ -226,3 +226,13 @@ def test_name_migration_failure_retries_without_unpausing(tmp_path,monkeypatch):
     monkeypatch.setattr(service.immich,'migrate_person_name',lambda *args:'done')
     assert service.finish_migration()['pending']==0
     assert service.list_smart_albums()[0]['migration_issue'] is None
+
+
+def test_deleted_rule_is_not_recreated_from_worker_snapshot(service,monkeypatch):
+    album=service.save_album('delete',{},'mirror')['id']
+    snapshot=service.list_smart_albums()
+    service.delete_album(album)
+    monkeypatch.setattr(service,'list_smart_albums',lambda:snapshot)
+    assert service.sync_albums()=={'albums':0,'paused':0,'errors':[]}
+    assert not service.immich.remote
+    assert service.database.fetch_all('SELECT id FROM smart_albums')==[]
