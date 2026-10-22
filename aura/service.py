@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .event_tags import EventTags
+from .events import Events
 from .immich import ImmichError
 from .models import AlbumQuery
 from .query import parse_query
@@ -17,7 +17,7 @@ class AuraService:
     def __init__(self, database, immich):
         self.database, self.immich = database, immich
         database.initialize()
-        self.event_tags = EventTags(database, immich)
+        self.events = Events(database, immich)
 
     def check_integration(self):
         version = self.immich.require_supported()
@@ -31,11 +31,8 @@ class AuraService:
         return version
 
     def _query(self, query):
-        self.event_tags.require_ready()
+        self.events.require_ready()
         query = AlbumQuery.model_validate(query).compact()
-        event = query.pop('event', None)
-        if event:
-            query['tag_ids'] = list(dict.fromkeys([*query.get('tag_ids', []), event]))
         if query.get('tag_ids'):
             available = {t['id'] for t in self.immich.tags()}
             if set(query['tag_ids']) - available:
@@ -43,7 +40,16 @@ class AuraService:
         return query
 
     def search_assets(self, query):
-        return self.immich.search(self._query(query))
+        query = self._query(query)
+        event_ids = query.pop('event_ids', [])
+        if event := query.pop('event', None):
+            event_ids.append(event)
+        members = None
+        for event_id in event_ids:
+            ids = self.events.members(event_id)
+            members = ids if members is None else members & ids
+        rows = self.immich.search(query)
+        return rows if members is None else [r for r in rows if r['id'] in members]
 
     def preview_album(self, query):
         query = AlbumQuery.model_validate(query).compact()
@@ -58,7 +64,7 @@ class AuraService:
 
     def list_events(self):
         with self.database.lock('albums'):
-            return self.event_tags.list()
+            return self.events.list()
 
     def review_event(self, event_id, state='confirmed', name=None):
         if state == 'rejected':
@@ -67,34 +73,28 @@ class AuraService:
             raise ValueError('事件默认通过，无需设为待确认')
         with self.database.lock('albums'):
             self.check_integration()
-            return self.event_tags.rename(str(event_id), name)
+            return self.events.rename(str(event_id), name)
 
     def merge_events(self, event_ids, name=None):
         with self.database.lock('albums'):
             self.check_integration()
-            return self.event_tags.merge(event_ids, name)
+            return self.events.merge(event_ids, name)
 
     def delete_event(self, event_id):
         with self.database.lock('albums'):
             self.check_integration()
-            return self.event_tags.delete(str(event_id))
+            return self.events.delete(str(event_id))
 
-    def cancel_event_operation(self, key):
+    def migrate_events(self):
         with self.database.lock('albums'):
-            self.check_integration()
-            self.event_tags.cancel(key)
-
-    def process_event_operations(self):
-        with self.database.lock('albums'):
-            self.check_integration()
-            migration = self.event_tags.migrate()
-            result = self.event_tags.retry()
-            return {**result, 'migration': migration}
+            if not self.events.migration()['complete']:
+                self.check_integration()
+            return self.events.migrate()
 
     def build_events(self):
         with self.database.lock('albums'):
             self.check_integration()
-            return self.event_tags.build()
+            return self.events.build()
 
     def list_smart_albums(self):
         rows = self.database.fetch_all('SELECT * FROM smart_albums ORDER BY id DESC')
@@ -106,7 +106,7 @@ class AuraService:
         self.check_integration()
         with self.database.lock('albums'):
             query = self._query(query)
-            rows = self.immich.search(query)
+            rows = self.search_assets(query)
             if album_id is None:
                 album_id = self.database.execute('INSERT INTO smart_albums(name,query_json,sync_mode,matched_assets) VALUES (?,?,?,?)',
                                                 [name, json.dumps(query, ensure_ascii=False), sync_mode, len(rows)]).lastrowid
@@ -160,7 +160,7 @@ class AuraService:
     def sync_albums(self):
         self.check_integration()
         synced, errors, paused = 0, [], 0
-        if not self.event_tags.migration()['complete']:
+        if not self.events.migration()['complete']:
             return {'albums': 0, 'paused': len(self.list_smart_albums()), 'errors': []}
         for album in self.list_smart_albums():
             if album['migration_issue']:

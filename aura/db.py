@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 LEGACY_VERSION = 6
 SCHEMA = [
     'CREATE TABLE schema_version (version INTEGER NOT NULL)',
@@ -106,33 +106,46 @@ class Database:
     def initialize(self):
         self._initialize_v6()
         with self.lock('schema'), self.connect() as c:
-            if c.execute('SELECT version FROM schema_version').fetchone()[0] == SCHEMA_VERSION:
+            version = c.execute('SELECT version FROM schema_version').fetchone()[0]
+            if version == SCHEMA_VERSION:
                 return
-            count = c.execute('SELECT COUNT(*) FROM events').fetchone()[0]
-            archive = self.path.with_suffix('.pre-0.4.2.sqlite')
-            if count and not archive.exists():
+            archive = self.path.with_suffix('.pre-0.4.3.sqlite')
+            if not archive.exists():
                 partial = archive.with_suffix('.tmp')
                 with sqlite3.connect(partial) as backup:
                     c.backup(backup)
                 partial.chmod(0o600)
                 partial.replace(archive)
             c.execute('BEGIN IMMEDIATE')
-            c.execute("""CREATE TABLE managed_event_tags (
-                tag_id TEXT PRIMARY KEY, origin TEXT NOT NULL UNIQUE,
-                mode TEXT NOT NULL DEFAULT 'automatic', state TEXT NOT NULL DEFAULT 'active',
-                fingerprint TEXT, legacy_id INTEGER UNIQUE)""")
-            c.execute('CREATE TABLE event_processed_assets (asset_id TEXT PRIMARY KEY)')
-            c.execute("""CREATE TABLE event_operations (
-                id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, error TEXT,
+            if version == 6:
+                c.execute('ALTER TABLE events RENAME TO import_events')
+                c.execute('ALTER TABLE event_assets RENAME TO import_event_assets')
+            c.execute("""CREATE TABLE events (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                starts_at TEXT, ends_at TEXT, review_state TEXT NOT NULL DEFAULT 'confirmed',
+                source TEXT NOT NULL DEFAULT 'automatic', issue TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
-            c.execute('ALTER TABLE events RENAME TO legacy_events')
-            c.execute('ALTER TABLE event_assets RENAME TO legacy_event_assets')
-            if not count:
-                c.execute('DROP TABLE legacy_event_assets')
-                c.execute('DROP TABLE legacy_events')
-            report = {'complete': not bool(count), 'total': count, 'migrated': 0,
-                      'archive': archive.name if count else None}
-            c.execute('INSERT INTO settings VALUES (?,?)', ['event_tag_migration', json.dumps(report)])
+            c.execute("""CREATE TABLE event_assets (event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                asset_id TEXT NOT NULL, PRIMARY KEY(event_id, asset_id))""")
+            c.execute('CREATE TABLE IF NOT EXISTS event_processed_assets (asset_id TEXT PRIMARY KEY)')
+            if version == 6:
+                mapping = {}
+                for row in c.execute('SELECT * FROM import_events').fetchall():
+                    event_id = str(uuid4()); mapping[row['id']] = event_id
+                    c.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',
+                              [event_id, *[row[k] for k in ('name', 'starts_at', 'ends_at', 'review_state', 'source', 'issue', 'created_at')]])
+                    c.execute('INSERT INTO event_assets SELECT ?,asset_id FROM import_event_assets WHERE event_id=?', [event_id, row['id']])
+                c.execute('INSERT OR IGNORE INTO event_processed_assets SELECT asset_id FROM event_assets')
+                for row in c.execute('SELECT id,query_json FROM smart_albums').fetchall():
+                    query = json.loads(row['query_json'])
+                    if 'event' in query:
+                        query['event'] = mapping.get(query['event'], str(uuid4()))
+                        c.execute('UPDATE smart_albums SET query_json=? WHERE id=?', [json.dumps(query), row['id']])
+                c.execute('DROP TABLE import_event_assets')
+                c.execute('DROP TABLE import_events')
+            c.execute('CREATE INDEX aura_event_assets_asset ON event_assets(asset_id)')
+            report = {'complete': version == 6, 'source': 'local' if version == 6 else 'immich_tags', 'archive': archive.name}
+            c.execute('INSERT INTO settings VALUES (?,?)', ['local_event_migration', json.dumps(report)])
+            c.execute("DELETE FROM task_status WHERE name='event_tags'")
             c.execute('UPDATE schema_version SET version=?', [SCHEMA_VERSION])
 
     @staticmethod

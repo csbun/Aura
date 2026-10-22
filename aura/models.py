@@ -10,6 +10,7 @@ class AlbumQuery(BaseModel):
     person_ids: list[UUID] = Field(default_factory=list, max_length=20)
     tag_ids: list[UUID] = Field(default_factory=list, max_length=20)
     event: UUID | None = None
+    event_ids: list[UUID] = Field(default_factory=list, max_length=20)
     start: datetime | None = None
     end: datetime | None = None
     city: str | None = Field(default=None, max_length=200)

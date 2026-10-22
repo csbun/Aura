@@ -38,7 +38,8 @@
           <h2>事件整理</h2>
           <p class="muted">
             按拍摄日期和 6 小时间隔自动整理，默认通过，可直接用于相册。事件以
-            Immich 标签保存，可在两侧查看和调整。需要时合并或删除事件。
+            Aura 自动整理，可合并、改名或删除。需要收藏或分享时创建 Immich
+            相册。
           </p>
           <label
             >查找事件<input
@@ -92,10 +93,12 @@
               按 Ctrl / ⌘ 多选；所有条件同时满足。人物和标签来自 Immich。
             </p>
             <label
-              >事件<select id="album-event">
-                <option value="">不限</option>
-              </select></label
-            >
+              >事件（可多选，不选则不限）<select
+                id="album-event"
+                multiple
+                size="4"
+              ></select
+            ></label>
             <div class="pair">
               <label>开始日期（含，UTC）<input id="start" type="date" /></label
               ><label

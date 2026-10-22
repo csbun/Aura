@@ -1,3 +1,2 @@
-# Compatibility file for older commands. Samples are now writable in
-# docker-compose.samples.yml; this extra override is no longer needed.
+# Compatibility file; samples are read-only. No XMP override is needed.
 services: {}

@@ -31,7 +31,7 @@ def run_once(service, settings):
     report = json.loads(database.get_setting('migration_report', 'null'))
     if report and not report.get('names_finished'):
         run_task(database, 'migration', service.finish_migration)
-    if not run_task(database, 'event_tags', service.process_event_operations):
+    if not run_task(database, 'event_migration', service.migrate_events):
         return
     # Do not enumerate photo metadata every time an album is checked.
     last = database.get_setting('events_built_at')
@@ -43,7 +43,7 @@ def run_once(service, settings):
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     settings, config = Settings.from_env(), ImmichConfig.from_env()
-    service = AuraService(Database(settings.db_path), ImmichClient(ImmichSettings(config.url, config.api_key, config.job_api_key)))
+    service = AuraService(Database(settings.db_path), ImmichClient(ImmichSettings(config.url, config.api_key)))
     with service.database.lock('worker'):
         service.database.execute("UPDATE task_status SET state='interrupted',error='worker restarted' WHERE state='running'")
         while True:

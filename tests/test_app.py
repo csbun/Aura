@@ -18,7 +18,7 @@ def app_client(tmp_path,monkeypatch):
 
 def test_extension_routes_and_removed_management(tmp_path,monkeypatch):
     client,module=app_client(tmp_path,monkeypatch)
-    assert client.get('/health').json()['version']=='0.4.2'
+    assert client.get('/health').json()['version']=='0.4.3'
     assert '高级整理' in client.get('/').text
     assert client.get('/static/app.js').status_code==200
     assert client.get('/api/v1/people').json()[0]['id']==PERSON

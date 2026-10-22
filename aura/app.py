@@ -15,7 +15,7 @@ from .service import AuraService
 
 settings, immich_config = Settings.from_env(), ImmichConfig.from_env()
 database = Database(settings.db_path)
-immich = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key, immich_config.job_api_key))
+immich = ImmichClient(ImmichSettings(immich_config.url, immich_config.api_key))
 service = AuraService(database, immich)
 app = FastAPI(title='Aura — Immich 高级整理', version=__version__)
 
@@ -125,14 +125,7 @@ def tasks():
     rows = database.fetch_all('SELECT * FROM task_status ORDER BY name')
     for row in rows:
         row['result'] = json.loads(row.pop('result_json') or 'null')
-    operations = database.fetch_all('SELECT id,error FROM event_operations ORDER BY created_at')
-    return {'tasks': rows, 'event_tags_enabled': service.event_tags.enabled, 'event_migration': service.event_tags.migration(), 'event_operations': operations}
-
-
-@app.delete('/api/v1/event-operations/{operation_id}', status_code=204)
-def cancel_event_operation(operation_id: UUID):
-    service.cancel_event_operation(str(operation_id))
-    return Response(status_code=204)
+    return {'tasks': rows, 'event_migration': service.events.migration()}
 
 
 @app.get('/api/v1/migration')

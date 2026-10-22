@@ -6,7 +6,6 @@ Searches fail closed: malformed/incomplete pagination never becomes an empty alb
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -23,7 +22,6 @@ class ImmichError(RuntimeError):
 class ImmichSettings:
     base_url: str
     api_key: str
-    job_api_key: str = ''
 
     @property
     def configured(self) -> bool:
@@ -227,98 +225,6 @@ class ImmichClient:
 
     def tag(self, tag_id: str) -> dict:
         return self._tag(self._request('GET', f'/tags/{quote(tag_id, safe="")}'), tag_id)
-
-    def create_tag(self, name: str, parent_id: str | None = None) -> dict:
-        self.require_supported()
-        if not name.strip() or '/' in name:
-            raise ValueError('标签名称不能为空或包含 /；层级通过父标签指定')
-        payload = {'name': name}
-        if parent_id:
-            payload['parentId'] = parent_id
-        result = self._tag(self._request('POST', '/tags', payload))
-        if result['name'] != name or result.get('parentId') != parent_id:
-            raise ImmichError('Immich did not confirm the requested tag hierarchy')
-        return result
-
-    def rename_tag(self, tag_id: str, name: str) -> dict:
-        self.require_supported()
-        if not name.strip() or '/' in name:
-            raise ValueError('标签名称不能为空或包含 /')
-        result = self._tag(self._request('PUT', f'/tags/{quote(tag_id, safe="")}', {'name': name}), tag_id)
-        if result['name'] != name:
-            raise ImmichError('Immich did not confirm the tag name')
-        return result
-
-    def change_tag_assets(self, tag_id: str, ids: set[str], *, remove=False):
-        if not ids:
-            return
-        self.require_supported()
-        ordered = sorted(ids)
-        for offset in range(0, len(ordered), 500):
-            batch = ordered[offset:offset + 500]
-            result = _items(self._request('DELETE' if remove else 'PUT',
-                                         f'/tags/{quote(tag_id, safe="")}/assets', {'ids': batch}), 'tag membership')
-            accepted = {r['id'] for r in result if r.get('success') is True
-                        or (not remove and r.get('error') == 'duplicate')}
-            if set(batch) - accepted:
-                raise ImmichError('Immich 未完成标签照片关联更新，不能继续迁移或删除旧数据')
-
-    def delete_tag(self, tag_id: str):
-        self.require_supported()
-        # A child may have been added manually. Never cascade into an unrelated tag.
-        if any(tag.get('parentId') == tag_id for tag in self.tags()):
-            raise ImmichError('标签含有子标签，请先处理子标签后再删除')
-        self._request('DELETE', f'/tags/{quote(tag_id, safe="")}')
-
-    def asset_detail(self, asset_id: str) -> dict:
-        result = self._request('GET', f'/assets/{quote(asset_id, safe="")}')
-        if not isinstance(result, dict) or result.get('id') != asset_id or not isinstance(result.get('updatedAt'), str):
-            raise ImmichError('Immich: invalid asset detail response')
-        _items(result.get('tags'), 'asset tags')
-        return result
-
-    def refresh_asset_metadata(self, asset_id: str):
-        self.require_supported()
-        self._request('POST', '/assets/jobs', {'assetIds': [asset_id], 'name': 'refresh-metadata'})
-
-    def jobs_idle(self, names: tuple[str, ...]) -> bool:
-        reader = (ImmichClient(ImmichSettings(self.settings.base_url, self.settings.job_api_key), self.timeout)
-                  if self.settings.job_api_key else self)
-        try:
-            result = reader._request('GET', '/jobs')
-        except ImmichError as error:
-            raise ImmichError('无法读取 Immich 任务队列：请配置管理员的 IMMICH_JOB_API_KEY（job.read）；照片仍使用原 API key') from error
-        if not isinstance(result, dict):
-            raise ImmichError('Immich: invalid queue response')
-        idle = True
-        for name in names:
-            queue = result.get(name, {})
-            counts = queue.get('jobCounts', {})
-            if any(type(counts.get(key)) is not int or counts.get(key, 0) < 0 for key in ('active', 'waiting', 'delayed', 'failed')):
-                raise ImmichError(f'Immich: missing queue counts for {name}')
-            if counts['failed']:
-                raise ImmichError(f'Immich {name} 存在失败任务，请先处理后重试')
-            busy = any(counts.get(key, 0) > 0 for key in ('active', 'waiting', 'delayed'))
-            if busy and queue.get('queueStatus', {}).get('isPaused'):
-                raise ImmichError(f'Immich {name} 队列已暂停，无法完成持久性检查')
-            idle = idle and not busy
-        return idle
-
-    def wait_tag_writes(self, *, timeout=30, sleep=time.sleep, clock=time.monotonic):
-        """Drain the upstream write/read pipeline before another tag mutation.
-
-        HTTP success only confirms the database write; an older sidecar job can
-        otherwise overwrite a subsequent edit. Two idle observations also cover
-        the transition between sidecar writes and metadata extraction.
-        """
-        deadline, stable = clock() + timeout, 0
-        while stable < 2:
-            stable = stable + 1 if self.jobs_idle(('sidecar', 'metadataExtraction')) else 0
-            if stable == 2:
-                return
-            if clock() >= deadline:
-                raise ImmichError('Immich 标签写入队列仍忙碌，任务保留并稍后重试')
-            sleep(0.25)
 
     def tag_assets(self, tag_id: str) -> list[dict]:
         """Complete tag membership, including offline assets; never a cached replica."""

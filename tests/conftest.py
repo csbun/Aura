@@ -129,8 +129,3 @@ class FakeImmich:
 @pytest.fixture
 def service(tmp_path):
     return AuraService(Database(tmp_path/'aura.db'),FakeImmich())
-
-
-@pytest.fixture(autouse=True)
-def enable_event_tag_test_backend(monkeypatch):
-    monkeypatch.setenv('AURA_EVENT_TAGS_ENABLED','true')

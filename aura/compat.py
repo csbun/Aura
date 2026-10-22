@@ -1,7 +1,7 @@
 """Explicit compatibility check against a running official Immich instance."""
 import argparse
 import json
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from .config import ImmichConfig
 from .immich import ImmichClient, ImmichSettings, ImmichError
@@ -45,21 +45,14 @@ def check(client, write_test=False):
 def main():
     parser = argparse.ArgumentParser(description='Check the configured Immich contract; does not change version allowlists')
     parser.add_argument('--write-test', action='store_true', help='Create a temporary album, test member add/remove, then delete only that album')
-    parser.add_argument('--tag-test-asset', type=UUID, help='Explicit untagged test photo UUID: add a temporary tag, refresh metadata, verify durability, and clean up')
     args = parser.parse_args()
     config = ImmichConfig.from_env()
     try:
-        client = ImmichClient(ImmichSettings(config.url, config.api_key, config.job_api_key))
-        if args.tag_test_asset:
-            from .tag_check import check_tag_persistence
-            result = check_tag_persistence(client, str(args.tag_test_asset))
-        else:
-            result = check(client, args.write_test)
+        client = ImmichClient(ImmichSettings(config.url, config.api_key))
+        result = check(client, args.write_test)
     except ImmichError as error:
         parser.exit(1, str(error) + '\n')
     print(json.dumps(result, ensure_ascii=False))
-    if result.get('migration_ready') is False:
-        parser.exit(1)
 
 
 if __name__ == '__main__':
