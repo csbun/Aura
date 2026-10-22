@@ -19,7 +19,7 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
 ## 2. 创建测试图库
 
 1. 在 Immich 管理页面创建一个专用测试用户；不要与真实图库建立伙伴共享。
-2. 管理员创建外部库，所有者选该测试用户，添加 `/samples/cities` 和 `/samples/pipa`，执行 Scan。
+2. 管理员创建外部库，所有者选该测试用户，只添加 `/samples`，执行 Scan。Immich 会递归扫描全部子目录，无需按数据集分别配置。
 3. 等待元数据、缩略图、人物和 Smart Search 任务完成。
 4. 登录测试用户，创建 API key。权限与 [README](../README.md)一致；确认该用户首页只显示样本照片。
 
