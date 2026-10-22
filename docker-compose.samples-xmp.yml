@@ -1,12 +1,3 @@
-# Optional writable SAMPLE directory for testing Immich XMP persistence.
-# This grants write access to sample photos as well as XMP files.
-# Not enabled by the normal samples configuration; NAS stays read-only.
-services:
-  immich-server:
-    volumes:
-      - type: bind
-        source: ./sample-photos
-        target: /samples
-        read_only: false
-        bind:
-          create_host_path: false
+# Compatibility file for older commands. Samples are now writable in
+# docker-compose.samples.yml; this extra override is no longer needed.
+services: {}

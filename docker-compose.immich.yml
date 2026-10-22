@@ -10,7 +10,7 @@ services:
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3.3.4}
     volumes:
       - ${IMMICH_UPLOAD_LOCATION:-./immich/library}:/data
-      - nas_photos:/photos:ro
+      - nas_photos_rw:/photos:rw
       - /etc/localtime:/etc/localtime:ro
     environment:
       DB_HOSTNAME: database
@@ -60,10 +60,11 @@ services:
     restart: always
 
 volumes:
-  nas_photos:
+  # A new name avoids reusing an existing Docker volume with immutable ro options.
+  nas_photos_rw:
     driver: local
     driver_opts:
       type: cifs
       device: "//${NAS_HOST:?set NAS_HOST}/${NAS_SHARE:?set NAS_SHARE}"
-      o: "addr=${NAS_HOST:?set NAS_HOST},username=${NAS_USER:?set NAS_USER},password=${NAS_PASSWORD:?set NAS_PASSWORD},ro,vers=${NAS_SMB_VERSION:-3.0},sec=ntlmssp,iocharset=utf8"
+      o: "addr=${NAS_HOST:?set NAS_HOST},username=${NAS_USER:?set NAS_USER},password=${NAS_PASSWORD:?set NAS_PASSWORD},rw,vers=${NAS_SMB_VERSION:-3.0},sec=ntlmssp,iocharset=utf8"
   immich_model_cache:

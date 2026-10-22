@@ -1,4 +1,4 @@
-# Add local samples to the existing Immich; use a dedicated test user.
+# Add writable samples to Immich for XMP sidecars; use a dedicated test user.
 # See docs/run-samples.md for an isolated Aura test instance.
 services:
   immich-server:
@@ -6,6 +6,6 @@ services:
       - type: bind
         source: ./sample-photos
         target: /samples
-        read_only: true
+        read_only: false
         bind:
           create_host_path: false

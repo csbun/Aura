@@ -4,18 +4,17 @@ Aura 只访问 Immich API，不读取照片路径。沿用现有 Immich，新增
 
 ## 1. 挂载样本
 
-本地目录是 `sample-photos/`，照片集为：`cities/` 500 张、`pipa/` 442 张，均为补充拍摄日期后的版本。基础配置只读；0.4.2 标签验证需额外启用可写覆盖，Immich 会在照片旁生成 `.xmp`。不要混入原版副本、联系表或缓存。来源和元数据处理见 [样本说明](album-samples.md)。
+本地目录是 `sample-photos/`，照片集为：`cities/` 500 张、`pipa/` 442 张，均为补充拍摄日期后的版本。配置默认读写挂载，Immich 会在照片旁生成 `.xmp`。不要混入原版副本、联系表或缓存。来源和元数据处理见 [样本说明](album-samples.md)。
 
 在仓库根目录执行（会短暂重启 Immich 服务）：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  -f docker-compose.samples.yml -f docker-compose.samples-xmp.yml \
-  --profile immich \
+  -f docker-compose.samples.yml --profile immich \
   up -d --no-deps immich-server
 ```
 
-真实 NAS 挂载保留，额外增加 `/samples`。以后重建该服务时保留这两个样本覆盖文件。可写挂载给予 Immich 修改整个样本目录的权限；真实 `/photos` 仍只读。当前环境已授权并启用该覆盖。
+真实 NAS 挂载保留，额外增加 `/samples`。以后重建该服务时保留 `docker-compose.samples.yml`。这组配置要求 NAS 与样本均可读写；已有容器须重建后才应用。样本用户的 API key 仍只查询样本库。
 
 ## 2. 创建测试图库
 
@@ -40,7 +39,7 @@ IMMICH_PUBLIC_URL=http://<主机局域网IP>:2283
 IMMICH_PORT=2283
 IMMICH_API_KEY='测试用户的key'
 IMMICH_JOB_API_KEY='管理员的只读任务key'
-AURA_EVENT_TAGS_ENABLED=false
+AURA_EVENT_TAGS_ENABLED=true
 ```
 
 这里的主机 IP 是运行 Immich 的 Ubuntu 主机，替换占位符，并按实际情况修改端口。独立 Compose 项目不共享原项目的内部 DNS，不能写 `http://immich-server:2283`；容器里的 `127.0.0.1` 也不是宿主机。
@@ -51,7 +50,7 @@ docker compose -p aura-samples --env-file .env.samples \
   -f docker-compose.yml up -d --build
 ```
 
-打开 `http://<主机IP>:18081`。原 Aura 继续使用 `18080` 和原数据库；按[持久性检查](event-tag-persistence.md)验证后，将 `AURA_EVENT_TAGS_ENABLED` 改为 `true` 并重新创建容器。随后自动整理样本，每 5 分钟更新事件、每分钟更新规则。
+打开 `http://<主机IP>:18081`。原 Aura 继续使用 `18080` 和原数据库；启动后自动整理样本，每 5 分钟更新事件、每分钟更新规则。
 
 ```bash
 curl http://127.0.0.1:18081/api/v1/integrations/immich

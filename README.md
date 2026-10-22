@@ -4,7 +4,7 @@ Immich 管理照片、缩略图、人物、标签和识别任务。Aura 只做**
 
 日常浏览、人物命名和纠正在 Immich 完成；在 Aura 配置规则，然后回 Immich 看相册。事件名称和成员也改存 Immich 标签。
 
-本地样本环境已完成迁移：199 个事件、942 张照片。全部照片重新提取元数据后，标签名称和成员保持一致，原图校验和未变。真实 NAS 仍只读，尚不满足事件标签的 XMP 写入条件。
+本地样本环境已完成迁移：199 个事件、942 张照片。全部照片重新提取元数据后，标签名称和成员保持一致，原图校验和未变。部署要求：Immich 对其可见图库目录及 XMP 文件具有实际读写权限。
 
 ## 安装：已有 Immich
 
@@ -15,7 +15,7 @@ IMMICH_URL=http://<Immich的局域网IP>:2283
 IMMICH_PUBLIC_URL=http://<浏览器可访问的Immich地址>:2283
 IMMICH_API_KEY='图库用户的key'
 IMMICH_JOB_API_KEY='管理员的只读任务key'
-AURA_EVENT_TAGS_ENABLED=false
+AURA_EVENT_TAGS_ENABLED=true
 AURA_PORT=18080
 ```
 
@@ -29,20 +29,19 @@ docker compose up -d --build
 
 打开 `http://<主机IP>:18080`。无需手动运行扫描任务。
 
-### 启用事件标签（必需前置条件）
+### 事件标签的部署要求
 
-1. Immich 必须能持久写入可见图库的 XMP；只读外部库暂不支持此功能。本地样本使用[可写配置](docs/run-samples.md)，NAS 默认仍只读。
-2. 管理员创建仅有 `job.read` 权限的 key，填写 `IMMICH_JOB_API_KEY`。它只读取队列，不用于查询图库；图库仍由 `IMMICH_API_KEY` 隔离。若图库 key 本身已有管理员任务读取权限，可省略第二个 key。
-3. 用一张无标签的独立测试照片执行 `docker compose exec aura aura-check --tag-test-asset <照片UUID>`。队列失败、权限不足或刷新后标签丢失均不能视为通过。
-4. 检查通过后设置 `AURA_EVENT_TAGS_ENABLED=true` 并重新创建 Aura 和 worker。迁移及后续整理自动运行；无需人工执行扫描或迁移命令。
+- **Immich 的照片目录必须可读写**：Docker 挂载为 `rw`，NAS 账号和目录权限也允许创建、更新 `.xmp` 文件；仅去掉 `:ro` 不足以保证能写入。
+- 管理员创建仅有 `job.read` 权限的 key，填写 `IMMICH_JOB_API_KEY`。它只读取队列，图库仍由 `IMMICH_API_KEY` 隔离；若图库 key 已有管理员任务权限，可省略第二个 key。
+- Docker 部署默认启用事件整理，迁移和后续任务自动运行。已有 `.env` 若设为 `AURA_EVENT_TAGS_ENABLED=false`，改成 `true` 后重建 Aura/worker；`false` 仍可用于暂停事件写入。
 
-连续标签操作会等待 Sidecar 和元数据队列完成，防止旧 XMP 覆盖新操作。原有事件实例升级时，应先在测试实例完成此检查，避免旧事件迁移等待期间不可用。
+Immich 在照片旁写入 XMP；读写挂载也允许它修改、删除原图。Aura 自身不挂载照片。换库或排障时，可用一张无标签测试照片运行 `docker compose exec aura aura-check --tag-test-asset <照片UUID>` 验证持久性。
 
 ## 安装：同时部署 Immich + NAS 外部库
 
-2GB 内存 NAS 只提供文件；整套应用、数据库和模型放在 Ubuntu 主机。原图不复制，通过 SMB 只读提供给 Immich。
+2GB 内存 NAS 只提供文件；整套应用、数据库和模型放在 Ubuntu 主机。原图不复制，通过 SMB 读写提供给 Immich，以便保存 XMP。
 
-1. 主机安装 Docker、Compose 和 `cifs-utils`；NAS 启用 SMB 并授予照片目录读取权限。
+1. 主机安装 Docker、Compose 和 `cifs-utils`；NAS 启用 SMB，授予所用账号照片目录的读写权限。
 2. 复制 `.env.example` 为 `.env`，`chmod 600 .env`，填写：
 
    ```env
@@ -71,7 +70,7 @@ docker compose up -d --build
      --profile immich up -d aura aura-worker
    ```
 
-Immich 负责外部库扫描、缩略图、人物和语义索引。新增照片的扫描周期在 Immich 外部库设置中管理。满足事件标签前置条件后，Aura 自动生成事件，默认每天更新；相册规则默认每 5 分钟执行，可通过 `AURA_EVENT_INTERVAL`、`AURA_ALBUM_INTERVAL` 调整（秒）。
+Immich 负责外部库扫描、缩略图、人物和语义索引。新增照片的扫描周期在 Immich 外部库设置中管理。配置完成后，Aura 自动生成事件，默认每天更新；相册规则默认每 5 分钟执行，可通过 `AURA_EVENT_INTERVAL`、`AURA_ALBUM_INTERVAL` 调整（秒）。
 
 ## 使用
 
@@ -85,7 +84,7 @@ Immich 负责外部库扫描、缩略图、人物和语义索引。新增照片�
 
 ## 从 0.4 / 0.4.1 升级
 
-先满足事件标签前置条件，再停止旧 worker 并重建。仍只读或缺少队列权限时暂缓升级。
+先确认 Immich 图库可读写、任务 key 已配置，再停止旧 worker 并重建。
 
 ```bash
 docker compose stop aura aura-worker
@@ -94,7 +93,9 @@ docker compose up -d --build --no-deps aura aura-worker
 
 启动自动归档 `data/aura.pre-0.4.2.sqlite`，逐项创建标签、核验成员、转换规则；全部成功才删除旧运行表。失败任务保留并自动重试，页面可查看错误。取消普通失败任务会保留已完成的远端变更；旧数据迁移任务不可取消。归档仅是旧 Aura 数据库，不是原图备份。
 
-同时部署 Immich 时使用原有 compose 文件组合；样本可写覆盖文件须继续保留。迁移后事件 API 的 ID 为 Immich 标签 UUID，规则保存 `tag_ids`，不再保存本地事件编号。
+同时部署 Immich 时带上对应 compose 文件。样本现由 `docker-compose.samples.yml` 直接读写挂载，旧命令中的 `-f docker-compose.samples-xmp.yml` 可删去，兼容文件不再添加配置。迁移后事件 API 的 ID 为 Immich 标签 UUID，规则保存 `tag_ids`，不再保存本地事件编号。
+
+NAS 配置改用 `nas_photos_rw` 卷引用，避免复用旧 Docker 卷固化的只读参数；重建 `immich-server` 即可，仍指向同一 NAS 共享，不复制照片，也不删除旧卷。
 
 ## 从 0.3 升级
 
