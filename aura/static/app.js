@@ -214,6 +214,15 @@ function renderEvents() {
         "muted",
       ),
     );
+    const evidence = event.evidence || {};
+    const reasons = evidence.reasons?.join("、") || "证据有限";
+    card.append(
+      el(
+        "p",
+        `依据：${reasons} · 置信度 ${Math.round((event.confidence || 0) * 100)}%${evidence.uncertain ? " · 建议人工核对" : ""}`,
+        evidence.uncertain ? "warning" : "muted",
+      ),
+    );
     if (event.issue) card.append(el("p", event.issue, "warning"));
     const name = el("input");
     name.value = event.name;

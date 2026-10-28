@@ -97,7 +97,7 @@ class ImmichClient:
     def tags(self) -> list[dict]:
         return _items(self._request('GET', '/tags'), 'tags')
 
-    def search(self, query: dict, *, with_exif=False) -> list[dict]:
+    def search(self, query: dict, *, with_exif=False, with_people=False) -> list[dict]:
         filters = {'type': {'eq': 'IMAGE'}, 'isOffline': {'eq': False}, 'trashedAt': {'eq': None}}
         for key, remote in [('person_ids', 'personIds'), ('tag_ids', 'tagIds')]:
             if query.get(key):
@@ -112,7 +112,7 @@ class ImmichClient:
             filters['takenAt'] = dates
         semantic = bool(query.get('q'))
         payload = {'filter': filters, 'size': 100 if semantic else 1000, 'withExif': with_exif,
-                   'withPeople': False, 'withStacked': False}
+                   'withPeople': with_people, 'withStacked': False}
         if semantic:
             payload['query'] = query['q']
         rows, seen, cursors = [], set(), set()

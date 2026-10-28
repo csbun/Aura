@@ -38,7 +38,7 @@ docker compose up -d --build
    NAS_USER=你的SMB用户名
    NAS_PASSWORD='SMB密码'
    IMMICH_DB_PASSWORD='随机字母数字密码'
-   IMMICH_VERSION=v3.3.4
+   IMMICH_VERSION=v3.3.5
    IMMICH_URL=http://immich-server:2283
    ```
 
@@ -58,14 +58,14 @@ docker compose up -d --build
      --profile immich up -d aura aura-worker
    ```
 
-Immich 负责扫描、缩略图、人物和 Smart Search。新增照片的扫描周期在 Immich 设置。Aura 默认每天整理事件、每 5 分钟更新相册规则；用 `AURA_EVENT_INTERVAL`、`AURA_ALBUM_INTERVAL` 调整秒数。
+Immich 负责扫描、缩略图、人物、OCR、地图和 Smart Search。中文界面、原生 AI、中文地图及地理信息的首次配置按[Immich 中文与 AI 基线](docs/immich-chinese-ai.md)执行；不要在 Aura 中另建一套人物、标签或模型索引。新增照片的扫描周期在 Immich 设置。Aura 默认每天整理事件、每 5 分钟更新相册规则；用 `AURA_EVENT_INTERVAL`、`AURA_ALBUM_INTERVAL` 调整秒数。
 
 ## 使用
 
 - **事件**：目前按日期/6 小时间隔生成，默认通过；可改名、合并或删除。人工改名或合并后停止自动扩充，删除后原成员不重新生成事件。
 - **相册**：事件卡片点「创建相册」，预览后保存；也可自由组合人物、普通标签、事件、时间及地点。所有条件同时满足，多选事件取交集。创建规则后才在 Immich 生成相册，自动事件不混入用户相册列表。
 - **删除事件**：照片及已有 Immich 相册保留，引用它的规则暂停；编辑条件后恢复。合并事件会自动改指向相关规则。
-- **自然语言**：先解析为可编辑条件，再预览。画面描述交给 Immich Smart Search，取最相关的前 100 张，再与事件求交；中文效果取决于模型。
+- **自然语言**：先解析为可编辑条件，再预览。画面检索交给 Immich Smart Search，取最相关的前 100 张，再与事件求交；中文效果取决于 Immich 选择的多语言 CLIP 模型。
 - **失效相册**：显示已删除/无权限提示，可删除 Aura 规则；这不会删除远端相册或照片。
 
 事件只在 Aura 中整理；Immich 中改标签不会修改 Aura 事件。只读图库不影响 Aura 事件，但不能解决 Immich 自身编辑标签后的 XMP 持久性问题。

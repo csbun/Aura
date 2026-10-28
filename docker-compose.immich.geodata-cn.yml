@@ -1,0 +1,18 @@
+# Optional Chinese geodata for Immich's built-in reverse geocoding.
+# Prepare the data first with:
+#   bash scripts/prepare_immich_geodata_cn.sh
+services:
+  immich-server:
+    volumes:
+      - type: bind
+        source: ./immich/geodata-cn/geodata
+        target: /build/geodata
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./immich/geodata-cn/i18n-iso-countries/langs
+        target: /usr/src/app/server/node_modules/i18n-iso-countries/langs
+        read_only: true
+        bind:
+          create_host_path: false

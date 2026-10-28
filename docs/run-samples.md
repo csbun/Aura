@@ -16,6 +16,14 @@ docker compose -f docker-compose.yml -f docker-compose.immich.yml \
 
 真实 NAS 挂载保留，额外增加 `/samples`。以后重建该服务时保留 `docker-compose.samples.yml`。这组配置将 NAS 与样本均设为只读；已有容器须重建后才应用。样本用户的 API key 仍只查询样本库。
 
+升级 Immich 时也必须带上样本文件，并同时重建 server 和机器学习服务：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.immich.yml \
+  -f docker-compose.samples.yml --profile immich \
+  up -d --no-deps immich-server immich-machine-learning
+```
+
 ## 2. 创建测试图库
 
 1. 在 Immich 管理页面创建一个专用测试用户；不要与真实图库建立伙伴共享。

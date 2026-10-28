@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 LEGACY_VERSION = 6
 SCHEMA = [
     'CREATE TABLE schema_version (version INTEGER NOT NULL)',
@@ -109,6 +109,18 @@ class Database:
             version = c.execute('SELECT version FROM schema_version').fetchone()[0]
             if version == SCHEMA_VERSION:
                 return
+            if version == 8:
+                c.execute('BEGIN IMMEDIATE')
+                for statement in (
+                    "ALTER TABLE events ADD COLUMN location_label TEXT",
+                    "ALTER TABLE events ADD COLUMN activity_kind TEXT",
+                    "ALTER TABLE events ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5",
+                    "ALTER TABLE events ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'",
+                    "ALTER TABLE events ADD COLUMN algorithm_version INTEGER NOT NULL DEFAULT 1",
+                ):
+                    c.execute(statement)
+                c.execute('UPDATE schema_version SET version=?', [SCHEMA_VERSION])
+                return
             archive = self.path.with_suffix('.pre-0.4.3.sqlite')
             if not archive.exists():
                 partial = archive.with_suffix('.tmp')
@@ -122,7 +134,9 @@ class Database:
                 c.execute('ALTER TABLE event_assets RENAME TO import_event_assets')
             c.execute("""CREATE TABLE events (id TEXT PRIMARY KEY, name TEXT NOT NULL,
                 starts_at TEXT, ends_at TEXT, review_state TEXT NOT NULL DEFAULT 'confirmed',
-                source TEXT NOT NULL DEFAULT 'automatic', issue TEXT,
+                source TEXT NOT NULL DEFAULT 'automatic', issue TEXT, location_label TEXT,
+                activity_kind TEXT, confidence REAL NOT NULL DEFAULT 0.5,
+                evidence_json TEXT NOT NULL DEFAULT '{}', algorithm_version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             c.execute("""CREATE TABLE event_assets (event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                 asset_id TEXT NOT NULL, PRIMARY KEY(event_id, asset_id))""")
@@ -131,7 +145,7 @@ class Database:
                 mapping = {}
                 for row in c.execute('SELECT * FROM import_events').fetchall():
                     event_id = str(uuid4()); mapping[row['id']] = event_id
-                    c.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',
+                    c.execute('INSERT INTO events(id,name,starts_at,ends_at,review_state,source,issue,created_at) VALUES (?,?,?,?,?,?,?,?)',
                               [event_id, *[row[k] for k in ('name', 'starts_at', 'ends_at', 'review_state', 'source', 'issue', 'created_at')]])
                     c.execute('INSERT INTO event_assets SELECT ?,asset_id FROM import_event_assets WHERE event_id=?', [event_id, row['id']])
                 c.execute('INSERT OR IGNORE INTO event_processed_assets SELECT asset_id FROM event_assets')

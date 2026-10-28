@@ -6,25 +6,8 @@ from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from .activity import captured, group_activities, location, _visual
 from .immich import ImmichError
-
-
-def captured(asset):
-    raw = asset.get('localDateTime') or asset.get('fileCreatedAt')
-    try:
-        return datetime.fromisoformat(raw.replace('Z', '+00:00')).replace(tzinfo=None) if raw else None
-    except (ValueError, TypeError):
-        return None
-
-
-def groups(assets):
-    ordered = sorted((date, a['id']) for a in assets if (date := captured(a)))
-    result = []
-    for date, asset_id in ordered:
-        if not result or date.date() != result[-1][-1][0].date() or date-result[-1][-1][0] > timedelta(hours=6):
-            result.append([])
-        result[-1].append((date, asset_id))
-    return result
 
 
 def bounds(assets):
@@ -109,9 +92,15 @@ class Events:
 
     def list(self):
         self.require_ready()
-        return self.db.fetch_all("""SELECT e.*, COUNT(a.asset_id) AS asset_count FROM events e
+        rows = self.db.fetch_all("""SELECT e.*, COUNT(a.asset_id) AS asset_count FROM events e
             LEFT JOIN event_assets a ON a.event_id=e.id WHERE e.review_state='confirmed'
             GROUP BY e.id ORDER BY e.starts_at DESC,e.id""")
+        for row in rows:
+            try:
+                row['evidence'] = json.loads(row.pop('evidence_json') or '{}')
+            except (TypeError, json.JSONDecodeError):
+                row['evidence'] = {}
+        return rows
 
     def record(self, event_id):
         self.require_ready()
@@ -151,7 +140,7 @@ class Events:
         updated_albums = 0
         with self.db.connect() as c:
             c.execute('BEGIN IMMEDIATE')
-            c.execute("UPDATE events SET name=?,starts_at=?,ends_at=?,source='manual' WHERE id=?", [name, min(starts) if starts else None, max(ends) if ends else None, target])
+            c.execute("UPDATE events SET name=?,starts_at=?,ends_at=?,source='manual',algorithm_version=2 WHERE id=?", [name, min(starts) if starts else None, max(ends) if ends else None, target])
             c.executemany('INSERT OR IGNORE INTO event_assets VALUES (?,?)', [(target, i) for i in members])
             c.executemany("UPDATE events SET review_state='deleted' WHERE id=?", [(i,) for i in ids[1:]])
             for album in c.execute('SELECT id,query_json FROM smart_albums').fetchall():
@@ -173,32 +162,67 @@ class Events:
     def build(self):
         self.require_ready()
         # Complete the remote read before changing any local membership.
-        assets = self.remote.search({})
+        try:
+            assets = self.remote.search({}, with_exif=True, with_people=True)
+        except TypeError:  # small test doubles and older adapters
+            assets = self.remote.search({})
         by_id = {a['id']: a for a in assets}
         processed = {r['asset_id'] for r in self.db.fetch_all('SELECT asset_id FROM event_processed_assets')}
         fresh = set(by_id) - processed
-        automatic = {e['id']: self.members(e['id']) for e in self.list() if e['source'] == 'automatic' and not e['issue']}
-        auto_ids = set().union(*automatic.values()) if automatic else set()
+        existing = {e['id']: e for e in self.list()}
+        automatic = {i: self.members(i) for i, e in existing.items() if e['source'] == 'automatic' and not e['issue']}
+        visual_index = self._visual_index(assets)
+        activities = group_activities(assets, visual_index)
         created = changed = 0
         with self.db.connect() as c:
             c.execute('BEGIN IMMEDIATE')
-            for group in groups([a for a in assets if a['id'] in fresh | auto_ids]):
-                ids = {i for _, i in group}; new = ids & fresh
+            for activity in activities:
+                group = activity['assets']; ids = {a['id'] for a in group}; new = ids & fresh
                 if not new:
                     continue
                 matches = [i for i, members in automatic.items() if members & ids]
                 # Preserve existing events; extend the strongest overlap rather than silently merging them.
                 target = max(matches, key=lambda i: len(automatic[i] & ids)) if matches else str(uuid4())
+                start, end = bounds(group)
+                labels = [location(a)[1] for a in group if location(a)[1]]
+                kind = next((k for k in ('会议', '旅行', '聚餐', '风景') if k in activity['name']), None)
+                payload = {'reasons': activity['reasons'], 'confidence': activity['confidence'],
+                           'uncertain': activity['uncertain'], 'asset_count': len(ids)}
                 if not matches:
-                    c.execute('INSERT INTO events(id,name) VALUES (?,?)', [target, group[0][0].date().isoformat()])
+                    c.execute('INSERT INTO events(id,name,starts_at,ends_at,source,location_label,activity_kind,confidence,evidence_json,algorithm_version) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                              [target, activity['name'], start, end, 'automatic', labels[0] if labels else None, kind, activity['confidence'], json.dumps(payload, ensure_ascii=False), 2])
                     automatic[target] = set(); created += 1
                 else:
                     changed += 1
                 automatic[target] |= new
                 c.executemany('INSERT INTO event_assets VALUES (?,?)', [(target, i) for i in new])
                 c.executemany('INSERT INTO event_processed_assets VALUES (?)', [(i,) for i in new])
-                start, end = bounds([by_id[i] for i in automatic[target] if i in by_id])
-                c.execute('UPDATE events SET starts_at=?,ends_at=? WHERE id=?', [start, end, target])
+                all_items = [by_id[i] for i in automatic[target] if i in by_id]
+                all_activity = group_activities(all_items, visual_index)[0] if all_items else activity
+                c.execute('UPDATE events SET starts_at=?,ends_at=?,location_label=COALESCE(?,location_label),activity_kind=COALESCE(?,activity_kind),confidence=?,evidence_json=?,algorithm_version=2 WHERE id=?',
+                          [bounds(all_items)[0], bounds(all_items)[1], labels[0] if labels else None, kind, all_activity['confidence'], json.dumps({**payload, 'asset_count': len(automatic[target])}, ensure_ascii=False), target])
                 fresh -= new
+            if fresh:
+                # Photos without capture time still remain visible in Immich, but
+                # are not silently dropped from the processed set forever.
+                c.executemany('INSERT OR IGNORE INTO event_processed_assets VALUES (?)', [(i,) for i in fresh])
             c.execute("INSERT INTO settings VALUES ('events_built_at',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", [datetime.now(timezone.utc).isoformat()])
         return {'created': created, 'updated': changed, 'events': len(self.list())}
+
+    def _visual_index(self, assets):
+        """Ask Immich Smart Search for coarse visual evidence when supported.
+
+        Search results are evidence only; they never replace the time/location
+        and people checks in :func:`group_activities`.
+        """
+        index = {}
+        if not hasattr(self.remote, '_request'):
+            return index
+        for label, query in {'会议': 'meeting conference', '旅行': 'travel trip',
+                             '聚餐': 'food dinner restaurant', '风景': 'landscape scenery'}.items():
+            try:
+                for asset in self.remote.search({'q': query}):
+                    index.setdefault(asset['id'], set()).add(label)
+            except ImmichError:
+                continue
+        return index
