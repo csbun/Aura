@@ -15,6 +15,13 @@ target="${root}/immich/geodata-cn"
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 
+if [[ "${IMMICH_GEODATA_CN_FORCE:-0}" != "1" \
+  && -f "${target}/geodata/geodata-date.txt" \
+  && -d "${target}/i18n-iso-countries/langs" ]]; then
+  echo "Immich Chinese geodata is already present; skipping download."
+  exit 0
+fi
+
 mkdir -p "${target}"
 curl --fail --http1.1 --location --retry 3 --retry-all-errors --retry-delay 2 \
   --connect-timeout 30 --max-time 600 \

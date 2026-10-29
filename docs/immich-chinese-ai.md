@@ -1,100 +1,75 @@
 # Immich 中文和 AI：照着做
 
-适用版本：`v3.3.5`。本项目当前已经锁定这个版本。
+适用版本：`v3.3.5`。当前部署只有一个文件：`docker-compose.immich.yml`。
 
-只按下面顺序操作。
+## 第 1 步：配置外部图库
 
-## 第 1 步：启动 Immich
+在 `.env` 填写 Docker 主机上的目录：
 
-在 Aura 项目目录执行：
+```env
+IMMICH_EXTERNAL_LIBRARY_1=/srv/photos
+IMMICH_EXTERNAL_LIBRARY_2=/mnt/photo-archive
+```
+
+每个变量对应一个只读挂载：
+
+| 环境变量 | Immich 路径 |
+| --- | --- |
+| `IMMICH_EXTERNAL_LIBRARY_1` | `/external/1` |
+| `IMMICH_EXTERNAL_LIBRARY_2` | `/external/2` |
+| `IMMICH_EXTERNAL_LIBRARY_3` | `/external/3` |
+| `IMMICH_EXTERNAL_LIBRARY_4` | `/external/4` |
+
+需要 SMB/NFS 时，先把共享挂载到 Docker 主机，再填写挂载后的目录。不要在 Compose 中填写另一台机器的路径。
+
+## 第 2 步：启动
+
+首次启动或数据不完整时，Compose 会自动通过 GitHub Proxy 下载中文地理数据；数据已经完整时会自动跳过：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  --profile immich up -d
+docker compose -f docker-compose.immich.yml up -d
 ```
 
-确认三个服务都在运行：
+确认四个服务正常：
 
 ```bash
-docker compose ps
+docker compose -f docker-compose.immich.yml ps
 ```
 
-应看到 `immich_server`、`immich_machine_learning`、`immich_postgres` 正常运行。
+## 第 3 步：设置中文界面
 
-## 第 2 步：把 Immich 改成中文
+1. 登录 Immich。
+2. 点击右上角头像，进入 **Account Settings**。
+3. 找到 **Language**，选择 **简体中文**。
+4. 刷新页面。
 
-1. 打开 Immich，登录账号。
-2. 点击右上角头像。
-3. 点击 **Account Settings**。
-4. 找到 **Language**，选择 **简体中文**。
-5. 刷新页面。
+语言按账号保存，每个账号分别设置。
 
-语言是每个账号单独设置的，每个账号都要做一次。
+## 第 4 步：设置 AI 搜索
 
-## 第 3 步：开启中文 AI 搜索
+1. 用管理员账号进入 **Administration → Settings → Machine Learning Settings**。
+2. 确认 Machine Learning、Smart Search、Facial Recognition 和 OCR 已启用。
+3. Smart Search 的模型选择 `ViT-B-16-SigLIP2__webli` 并保存。
+4. 进入 **Administration → Jobs**，点击 Smart Search 右侧的 **All**。
+5. 如果人物或文字搜索没有结果，再执行 Face Detection、Facial Recognition 和 OCR 的 **All**。
 
-1. 用管理员账号打开 **Administration → Settings → Machine Learning Settings**。
-2. 确认 **Machine Learning、Smart Search、Facial Recognition、OCR** 都是开启状态。
-3. 打开 **Smart Search**，把 **Model Name** 改成下面这一项：
+第一次使用模型时会自动下载。模型缓存保存在 Docker volume `immich_model_cache`。当前 Compose 已设置一个 worker 和 300 秒 TTL，以减少内存占用。
 
-   ```text
-   ViT-B-16-SigLIP2__webli
-   ```
+## 第 5 步：生成中文地点
 
-4. 点击保存。
-5. 打开 **Administration → Jobs**。
-6. 点击 **Smart Search** 右侧的 **All**，等待任务完成。
-7. 如果人物或文字搜索还没有结果，再依次点击 **Face Detection、Facial Recognition、OCR** 右侧的 **All**。
-
-`ViT-B-16-SigLIP2__webli` 是 Immich `v3.3.5` 支持的多语言模型，官方简体中文评测召回率为 66.84%，峰值内存约 3.0 GiB，适合当前单 worker、自动释放模型的配置。它支持中英文混合搜索，不依赖当前账号语言。
-
-如果主机内存充足、更加重视中文搜索准确率，可以改用 `nllb-clip-large-siglip__v1`；它的中文评测召回率为 79.7%，但峰值内存约 4.2 GiB，并且需要把账号语言设为简体中文。
-
-第一次使用时，Immich 会自动下载模型到 `immich_model_cache`，不需要手工下载。下载期间搜索可能暂时没有结果，请等待下载完成。
-
-完成后，在 Immich 搜索框测试：
-
-```text
-海边的孩子
-春节聚餐
-杭州夜景
-```
-
-能返回相关照片后，Aura 的自然语言相册才具备中文画面搜索能力。
-
-## 第 4 步：生成中文地点信息（可选）
-
-使用 `immich-geodata-cn` 给 Immich 自带的反向地理编码替换中文地理数据。它通过 Compose 挂载数据，不另起服务，也不直接写 PostgreSQL。
-
-### 4.1 下载中文数据
+`immich-geodata-cn` 已作为只读数据挂载到 Immich，不需要另起 ReverseGeo 服务。更新数据时执行：
 
 ```bash
-bash scripts/prepare_immich_geodata_cn.sh
+IMMICH_GEODATA_CN_FORCE=1 docker compose -f docker-compose.immich.yml up -d --force-recreate geodata-init
+docker compose -f docker-compose.immich.yml up -d --force-recreate immich-server
 ```
 
-默认下载中国省、市、区县的增强数据。要换成更细或更小的数据包，把 Release 中的文件名作为参数传入。
+然后在 **Administration → Jobs → Metadata Extraction** 点击 **All**，让已有照片重新生成地点信息。新照片会在元数据提取时使用这套数据。
 
-### 4.2 带中文数据重建 Immich
+检查导入日志：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.immich.yml \
-  -f docker-compose.samples.yml \
-  -f docker-compose.immich.geodata-cn.yml \
-  --profile immich up -d --no-deps immich-server
+docker compose -f docker-compose.immich.yml logs immich-server | grep 'geodata records imported'
 ```
-
-如果不使用样本，去掉 `-f docker-compose.samples.yml`。
-
-启动后检查日志：
-
-```bash
-docker logs immich_server 2>&1 | grep 'geodata records imported'
-```
-
-然后在 Immich 管理员页面打开 **Administration → Jobs → Metadata Extraction**，点击 **All**，刷新已有照片的地点信息。以后新照片会使用这套中文数据自动处理。
-
-不再需要额外运行地理编码服务；Immich 会使用挂载的数据完成地点处理。地图底图的中文标注仍在 **Map & GPS Settings → Map Settings** 中配置。
 
 该项目主要覆盖中国大陆、港澳台，并实验性支持部分海外地区；它不是全球中文地名数据库。[项目说明](https://github.com/ZingLix/immich-geodata-cn)
-
-官方依据：[v3.3.5 发布记录](https://github.com/immich-app/immich/releases/tag/v3.3.5)、[中文 Smart Search](https://docs.immich.app/features/searching/)、[用户语言设置](https://docs.immich.app/features/user-settings/)、[反向地理编码](https://docs.immich.app/features/reverse-geocoding/)。

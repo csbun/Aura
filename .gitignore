@@ -8,6 +8,7 @@ data/
 immich/
 sample-photos/
 .sample-photos-work/
+external-library-*/
 
 # Python build outputs
 *.egg-info/

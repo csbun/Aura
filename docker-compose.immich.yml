@@ -1,16 +1,84 @@
-# Optional Immich profile. Start with:
-# docker compose -f docker-compose.yml -f docker-compose.immich.yml --profile immich up -d --build
+# Immich v3.3.5: server, machine learning, Redis, PostgreSQL and Chinese
+# reverse-geocoding data in one file.
 #
-# The service layout follows the official Immich Docker Compose release. Keep
-# IMMICH_VERSION pinned after the first successful installation.
+# Start with:
+#   docker compose -f docker-compose.immich.yml up -d
+#
+# External libraries are host directories. Set one or more of these in .env:
+#   IMMICH_EXTERNAL_LIBRARY_1=/srv/photos
+#   IMMICH_EXTERNAL_LIBRARY_2=/mnt/archive
+# They appear in Immich as /external/1 and /external/2.
 services:
+  geodata-init:
+    image: alpine:3.21
+    working_dir: /app
+    volumes:
+      - type: bind
+        source: ./scripts
+        target: /app/scripts
+        read_only: true
+      - type: bind
+        source: ./immich/geodata-cn
+        target: /app/immich/geodata-cn
+    environment:
+      IMMICH_GEODATA_CN_RELEASE: ${IMMICH_GEODATA_CN_RELEASE:-auto-release}
+      IMMICH_GEODATA_CN_GITHUB_PROXY: ${IMMICH_GEODATA_CN_GITHUB_PROXY:-https://gh-proxy.com/}
+      IMMICH_GEODATA_CN_FORCE: ${IMMICH_GEODATA_CN_FORCE:-0}
+    restart: "no"
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        if [ "${IMMICH_GEODATA_CN_FORCE:-0}" != "1" ] &&
+        [ -f /app/immich/geodata-cn/geodata/geodata-date.txt ] &&
+        [ -d /app/immich/geodata-cn/i18n-iso-countries/langs ]; then
+        echo "Immich Chinese geodata is already present; skipping download";
+        exit 0;
+        fi;
+        apk add --no-cache bash curl unzip;
+        bash scripts/prepare_immich_geodata_cn.sh
+
   immich-server:
-    profiles: ["immich"]
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3.3.5}
     volumes:
       - ${IMMICH_UPLOAD_LOCATION:-./immich/library}:/data
-      - nas_photos:/photos:ro
+      - type: bind
+        source: ${IMMICH_EXTERNAL_LIBRARY_1:-./external-library-1}
+        target: /external/1
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${IMMICH_EXTERNAL_LIBRARY_2:-./external-library-2}
+        target: /external/2
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${IMMICH_EXTERNAL_LIBRARY_3:-./external-library-3}
+        target: /external/3
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${IMMICH_EXTERNAL_LIBRARY_4:-./external-library-4}
+        target: /external/4
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ./immich/geodata-cn/geodata
+        target: /build/geodata
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./immich/geodata-cn/i18n-iso-countries/langs
+        target: /usr/src/app/server/node_modules/i18n-iso-countries/langs
+        read_only: true
+        bind:
+          create_host_path: false
       - /etc/localtime:/etc/localtime:ro
     environment:
       TZ: ${TZ:-Asia/Shanghai}
@@ -23,12 +91,15 @@ services:
     ports:
       - "${IMMICH_PORT:-2283}:2283"
     depends_on:
-      - redis
-      - database
+      redis:
+        condition: service_started
+      database:
+        condition: service_started
+      geodata-init:
+        condition: service_completed_successfully
     restart: always
 
   immich-machine-learning:
-    profiles: ["immich"]
     container_name: immich_machine_learning
     image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-v3.3.5}
     volumes:
@@ -41,7 +112,6 @@ services:
     restart: always
 
   redis:
-    profiles: ["immich"]
     container_name: immich_redis
     image: docker.io/valkey/valkey:9
     healthcheck:
@@ -49,7 +119,6 @@ services:
     restart: always
 
   database:
-    profiles: ["immich"]
     container_name: immich_postgres
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
     environment:
@@ -63,10 +132,4 @@ services:
     restart: always
 
 volumes:
-  nas_photos:
-    driver: local
-    driver_opts:
-      type: cifs
-      device: "//${NAS_HOST:?set NAS_HOST}/${NAS_SHARE:?set NAS_SHARE}"
-      o: "addr=${NAS_HOST:?set NAS_HOST},username=${NAS_USER:?set NAS_USER},password=${NAS_PASSWORD:?set NAS_PASSWORD},ro,vers=${NAS_SMB_VERSION:-3.0},sec=ntlmssp,iocharset=utf8"
   immich_model_cache:
