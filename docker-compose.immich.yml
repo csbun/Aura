@@ -10,16 +10,11 @@
 # They appear in Immich as /external/1 and /external/2.
 services:
   geodata-init:
-    image: alpine:3.21
+    image: ${IMMICH_GEODATA_INIT_IMAGE:-alpine:3.21}
     working_dir: /app
     volumes:
-      - type: bind
-        source: ./scripts
-        target: /app/scripts
-        read_only: true
-      - type: bind
-        source: ./immich/geodata-cn
-        target: /app/immich/geodata-cn
+      - immich_geodata:/geodata
+      - immich_country_langs:/langs
     environment:
       IMMICH_GEODATA_CN_RELEASE: ${IMMICH_GEODATA_CN_RELEASE:-auto-release}
       IMMICH_GEODATA_CN_GITHUB_PROXY: ${IMMICH_GEODATA_CN_GITHUB_PROXY:-https://gh-proxy.com/}
@@ -28,57 +23,66 @@ services:
     command:
       - /bin/sh
       - -ec
-      - >-
-        if [ "${IMMICH_GEODATA_CN_FORCE:-0}" != "1" ] &&
-        [ -f /app/immich/geodata-cn/geodata/geodata-date.txt ] &&
-        [ -d /app/immich/geodata-cn/i18n-iso-countries/langs ]; then
-        echo "Immich Chinese geodata is already present; skipping download";
-        exit 0;
-        fi;
-        apk add --no-cache bash curl unzip;
-        bash scripts/prepare_immich_geodata_cn.sh
+      - |
+        complete() {
+          for file in geodata-date.txt cities500.txt countryInfo.txt admin1CodesASCII.txt admin2Codes.txt ne_10m_admin_0_countries.geojson; do
+            [ -s "$$1/$$file" ] || return 1
+          done
+          [ -s "$$2/zh.json" ]
+        }
+        if [ "$$IMMICH_GEODATA_CN_FORCE" != "1" ] &&
+          [ -s /geodata/.immich-geodata-cn.complete ] && complete /geodata /langs; then
+          echo "Immich Chinese geodata is already present; skipping download."
+          exit 0
+        fi
+        apk add --no-cache curl unzip
+        direct_url="https://github.com/ZingLix/immich-geodata-cn/releases/download/$$IMMICH_GEODATA_CN_RELEASE"
+        if [ "$$IMMICH_GEODATA_CN_GITHUB_PROXY" = direct ]; then
+          base_url="$$direct_url"
+        else
+          base_url="$${IMMICH_GEODATA_CN_GITHUB_PROXY%/}/$$direct_url"
+        fi
+        stage=$$(mktemp -d)
+        trap 'rm -rf "$$stage"' EXIT
+        for asset in geodata_admin_2_admin_3_full.zip i18n-iso-countries.zip; do
+          curl --fail --http1.1 --location --retry 3 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 30 --max-time 0 --speed-limit 256 --speed-time 180 \
+            --output "$$stage/$$asset" "$$base_url/$$asset"
+          unzip -q "$$stage/$$asset" -d "$$stage"
+        done
+        complete "$$stage/geodata" "$$stage/i18n-iso-countries/langs" || { echo "Downloaded geodata is incomplete." >&2; exit 1; }
+        # Copy into the volume roots; never remove a mounted directory.
+        # Publish the completion marker last so interrupted copies retry.
+        rm -f /geodata/.immich-geodata-cn.complete
+        cp -R "$$stage/i18n-iso-countries/langs/." /langs/
+        for file in cities500.txt countryInfo.txt admin1CodesASCII.txt admin2Codes.txt ne_10m_admin_0_countries.geojson; do
+          cp "$$stage/geodata/$$file" "/geodata/$$file"
+        done
+        cp "$$stage/geodata/geodata-date.txt" /geodata/geodata-date.txt
+        printf '%s\n' "$$IMMICH_GEODATA_CN_RELEASE" > /geodata/.immich-geodata-cn.complete
+        echo "Installed Immich Chinese geodata."
 
   immich-server:
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3.3.5}
     volumes:
-      - ${IMMICH_UPLOAD_LOCATION:-./immich/library}:/data
-      - type: bind
-        source: ${IMMICH_EXTERNAL_LIBRARY_1:-./external-library-1}
-        target: /external/1
-        read_only: true
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${IMMICH_EXTERNAL_LIBRARY_2:-./external-library-2}
-        target: /external/2
-        read_only: true
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${IMMICH_EXTERNAL_LIBRARY_3:-./external-library-3}
-        target: /external/3
-        read_only: true
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${IMMICH_EXTERNAL_LIBRARY_4:-./external-library-4}
-        target: /external/4
-        read_only: true
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ./immich/geodata-cn/geodata
+      - ${IMMICH_UPLOAD_LOCATION:-immich_library}:/data
+      - ${IMMICH_EXTERNAL_LIBRARY_1:-immich_empty_library}:/external/1:ro
+      - ${IMMICH_EXTERNAL_LIBRARY_2:-immich_empty_library}:/external/2:ro
+      - ${IMMICH_EXTERNAL_LIBRARY_3:-immich_empty_library}:/external/3:ro
+      - ${IMMICH_EXTERNAL_LIBRARY_4:-immich_empty_library}:/external/4:ro
+      - type: volume
+        source: immich_geodata
         target: /build/geodata
         read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./immich/geodata-cn/i18n-iso-countries/langs
+        volume:
+          nocopy: true
+      - type: volume
+        source: immich_country_langs
         target: /usr/src/app/server/node_modules/i18n-iso-countries/langs
         read_only: true
-        bind:
-          create_host_path: false
+        volume:
+          nocopy: true
       - /etc/localtime:/etc/localtime:ro
     environment:
       TZ: ${TZ:-Asia/Shanghai}
@@ -113,7 +117,7 @@ services:
 
   redis:
     container_name: immich_redis
-    image: docker.io/valkey/valkey:9
+    image: ${IMMICH_REDIS_IMAGE:-valkey/valkey:9}
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
     restart: always
@@ -127,9 +131,14 @@ services:
       POSTGRES_DB: ${IMMICH_DB_DATABASE_NAME:-immich}
       POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:
-      - ${IMMICH_DB_DATA_LOCATION:-./immich/postgres}:/var/lib/postgresql/data
+      - ${IMMICH_DB_DATA_LOCATION:-immich_postgres}:/var/lib/postgresql/data
     shm_size: 128mb
     restart: always
 
 volumes:
+  immich_library:
+  immich_postgres:
+  immich_geodata:
+  immich_country_langs:
+  immich_empty_library:
   immich_model_cache:

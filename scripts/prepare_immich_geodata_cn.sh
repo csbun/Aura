@@ -24,10 +24,10 @@ fi
 
 mkdir -p "${target}"
 curl --fail --http1.1 --location --retry 3 --retry-all-errors --retry-delay 2 \
-  --connect-timeout 30 --max-time 600 \
+  --connect-timeout 30 --max-time 0 --speed-limit 256 --speed-time 180 \
   --output "${temp}/geodata.zip" "${base_url}/${geodata_asset}"
 curl --fail --http1.1 --location --retry 3 --retry-all-errors --retry-delay 2 \
-  --connect-timeout 30 --max-time 600 \
+  --connect-timeout 30 --max-time 0 --speed-limit 256 --speed-time 180 \
   --output "${temp}/i18n-iso-countries.zip" "${base_url}/i18n-iso-countries.zip"
 
 mkdir "${temp}/geodata" "${temp}/i18n"

@@ -24,17 +24,29 @@ IMMICH_EXTERNAL_LIBRARY_2=/mnt/photo-archive
 
 ## 第 2 步：启动
 
-首次启动或数据不完整时，Compose 会自动通过 GitHub Proxy 下载中文地理数据；数据已经完整时会自动跳过：
+数据库、上传文件、模型和中文数据默认保存在 Docker volume，Docker 自动创建存储，不需要 `mkdir` 或单独启动初始化服务。外部库目录是现有照片所在的宿主机目录，必须存在。
+
+首次启动或数据不完整时，Compose 会自动通过 GitHub Proxy 下载中文地理数据；数据已经完整时会自动跳过。将文件复制到群晖并命名为 `compose.yaml` 后，只需：
+
+```bash
+sudo docker compose -f compose.yaml up -d
+```
+
+在本仓库内运行则使用：
 
 ```bash
 docker compose -f docker-compose.immich.yml up -d
 ```
 
-确认四个服务正常：
+确认四个常驻服务正常，`geodata-init` 完成后显示 `Exited (0)` 属于正常情况：
 
 ```bash
 docker compose -f docker-compose.immich.yml ps
 ```
+
+新部署不要设置 `IMMICH_UPLOAD_LOCATION` 和 `IMMICH_DB_DATA_LOCATION`。旧 `.env` 若仍配置不存在的目录，会继续触发挂载错误；仅在确认未写入数据的新部署中删除这两项以使用自动 volume。已有数据的部署应保留这两项并指向原目录，切换为 volume 不会自动迁移旧数据。
+
+备份应包含数据库及上传文件的 volume；`docker compose down` 会保留它们，`down -v` 会删除这些数据，不用于常规停止服务。
 
 ## 第 3 步：设置中文界面
 
